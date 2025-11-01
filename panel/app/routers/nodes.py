@@ -48,7 +48,15 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
             existing.node_metadata.update(node.metadata)
         await db.commit()
         await db.refresh(existing)
-        return existing
+        return NodeResponse(
+            id=existing.id,
+            name=existing.name,
+            fingerprint=existing.fingerprint,
+            status=existing.status,
+            registered_at=existing.registered_at,
+            last_seen=existing.last_seen,
+            metadata=existing.node_metadata or {}
+        )
     
     # Create new node
     db_node = Node(
@@ -60,7 +68,15 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
     db.add(db_node)
     await db.commit()
     await db.refresh(db_node)
-    return db_node
+    return NodeResponse(
+        id=db_node.id,
+        name=db_node.name,
+        fingerprint=db_node.fingerprint,
+        status=db_node.status,
+        registered_at=db_node.registered_at,
+        last_seen=db_node.last_seen,
+        metadata=db_node.node_metadata or {}
+    )
 
 
 @router.get("", response_model=List[NodeResponse])
