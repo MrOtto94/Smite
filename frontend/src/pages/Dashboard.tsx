@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Activity, Server, Network, Cpu, MemoryStick } from 'lucide-react'
+import { Server, Network, Cpu, MemoryStick } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import api from '../api/client'
 
 interface Status {
@@ -116,7 +117,7 @@ interface StatCardProps {
   title: string
   value: string | number
   subtitle: string
-  icon: React.ComponentType<{ size?: number; className?: string }>
+  icon: LucideIcon
   color: 'blue' | 'green' | 'purple' | 'orange'
 }
 

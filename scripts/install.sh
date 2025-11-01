@@ -25,7 +25,7 @@ fi
 # Install Node.js and npm if not present
 if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
     echo "Node.js/npm not found. Installing Node.js..."
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
 fi
 
@@ -150,7 +150,7 @@ if [ -d "frontend" ]; then
         # Check npm again (might have been installed above)
         if ! command -v npm &> /dev/null; then
             echo "Installing Node.js..."
-            curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+            curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
             apt-get install -y nodejs
         fi
         

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Play, Pause } from 'lucide-react'
+import { Plus, Trash2, Play } from 'lucide-react'
 import api from '../api/client'
 
 interface Tunnel {
