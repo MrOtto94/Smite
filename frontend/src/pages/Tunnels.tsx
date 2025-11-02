@@ -131,14 +131,14 @@ const Tunnels = () => {
                 <div className="space-y-1">
                   <p className="text-sm font-medium text-gray-900 dark:text-white">
                     {tunnel.quota_mb > 0 
-                      ? `${(tunnel.used_mb / 1024).toFixed(2)} GB / ${(tunnel.quota_mb / 1024).toFixed(0)} GB`
-                      : `${(tunnel.used_mb / 1024).toFixed(2)} GB`
+                      ? `${tunnel.used_mb.toFixed(2)} MB / ${(tunnel.quota_mb / 1024).toFixed(0)} GB`
+                      : `${tunnel.used_mb.toFixed(2)} MB`
                     }
                   </p>
                   {tunnel.quota_mb > 0 && (
                     <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                       <div
-                        className="bg-blue-600 h-2 rounded-full"
+                        className="bg-blue-600 h-2 rounded-full transition-all"
                         style={{ width: `${Math.min((tunnel.used_mb / tunnel.quota_mb) * 100, 100)}%` }}
                       />
                     </div>
