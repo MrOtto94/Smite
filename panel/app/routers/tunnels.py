@@ -1,5 +1,5 @@
 """Tunnels API endpoints"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
@@ -51,7 +51,7 @@ class TunnelResponse(BaseModel):
 
 
 @router.post("", response_model=TunnelResponse)
-async def create_tunnel(tunnel: TunnelCreate, db: AsyncSession = Depends(get_db)):
+async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession = Depends(get_db)):
     """Create a new tunnel and auto-apply it"""
     from app.hysteria2_client import Hysteria2Client
     
@@ -97,6 +97,22 @@ async def create_tunnel(tunnel: TunnelCreate, db: AsyncSession = Depends(get_db)
         
         if response.get("status") == "success":
             db_tunnel.status = "active"
+            
+            # Start port forwarding on panel
+            remote_port = db_tunnel.spec.get("remote_port") or db_tunnel.spec.get("listen_port")
+            if remote_port and hasattr(request.app.state, 'port_forwarder'):
+                node_address = node.node_metadata.get("ip_address") if node.node_metadata else None
+                if node_address:
+                    try:
+                        await request.app.state.port_forwarder.start_forward(
+                            local_port=int(remote_port),
+                            node_address=node_address,
+                            remote_port=int(remote_port)
+                        )
+                    except Exception as e:
+                        # Log but don't fail tunnel creation
+                        import logging
+                        logging.error(f"Failed to start port forwarding: {e}")
         else:
             db_tunnel.status = "error"
         await db.commit()
@@ -209,12 +225,21 @@ async def apply_tunnel(tunnel_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{tunnel_id}")
-async def delete_tunnel(tunnel_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Delete a tunnel"""
     result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))
     tunnel = result.scalar_one_or_none()
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
+    
+    # Stop port forwarding on panel
+    remote_port = tunnel.spec.get("remote_port") or tunnel.spec.get("listen_port")
+    if remote_port and hasattr(request.app.state, 'port_forwarder'):
+        try:
+            await request.app.state.port_forwarder.stop_forward(int(remote_port))
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to stop port forwarding: {e}")
     
     # Remove from node if active
     if tunnel.status == "active":

@@ -4,6 +4,10 @@ Smite Panel - Central Controller
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.database import AsyncSessionLocal
+from app.models import Tunnel, Node
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +18,10 @@ from app.config import settings
 from app.database import init_db
 from app.routers import nodes, tunnels, panel, usage, status, logs
 from app.hysteria2_server import Hysteria2Server
+from app.port_forwarder import port_forwarder
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -27,11 +35,53 @@ async def lifespan(app: FastAPI):
     await h2_server.start()
     app.state.h2_server = h2_server
     
+    # Initialize port forwarder
+    app.state.port_forwarder = port_forwarder
+    
+    # Restore active tunnels' port forwarding on startup
+    await _restore_port_forwards()
+    
     yield
     
     # Shutdown
     if hasattr(app.state, 'h2_server'):
         await app.state.h2_server.stop()
+    
+    # Stop all port forwarding
+    await port_forwarder.cleanup_all()
+
+
+async def _restore_port_forwards():
+    """Restore port forwarding for active tunnels on startup"""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+            tunnels = result.scalars().all()
+            
+            for tunnel in tunnels:
+                remote_port = tunnel.spec.get("remote_port") or tunnel.spec.get("listen_port")
+                if not remote_port:
+                    continue
+                
+                # Get node
+                node_result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+                node = node_result.scalar_one_or_none()
+                if not node:
+                    continue
+                
+                # Get node address
+                node_address = node.node_metadata.get("ip_address") if node.node_metadata else None
+                if not node_address:
+                    continue
+                
+                # Start forwarding
+                await port_forwarder.start_forward(
+                    local_port=int(remote_port),
+                    node_address=node_address,
+                    remote_port=int(remote_port)
+                )
+    except Exception as e:
+        logger.error(f"Error restoring port forwards: {e}")
 
 
 app = FastAPI(
