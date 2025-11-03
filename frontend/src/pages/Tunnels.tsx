@@ -142,14 +142,18 @@ const Tunnels = () => {
                       : `${tunnel.used_mb.toFixed(2)} MB`
                     }
                   </p>
-                  {tunnel.quota_mb > 0 && (
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div
-                        className="bg-blue-600 h-2 rounded-full transition-all"
-                        style={{ width: `${Math.min((tunnel.used_mb / tunnel.quota_mb) * 100, 100)}%` }}
-                      />
-                    </div>
-                  )}
+                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all"
+                      style={{ 
+                        width: tunnel.quota_mb > 0 
+                          ? `${Math.min((tunnel.used_mb / tunnel.quota_mb) * 100, 100)}%`
+                          : tunnel.used_mb > 0 
+                            ? '100%'
+                            : '0%'
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
               <div>
@@ -163,6 +167,42 @@ const Tunnels = () => {
                     ? new Date(tunnel.expires_at).toLocaleDateString()
                     : 'Never'}
                 </p>
+              </div>
+            </div>
+            
+            {/* Port Details */}
+            <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <p className="text-gray-500 dark:text-gray-400 mb-1">Proxy Port</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">
+                    {tunnel.spec?.remote_port || tunnel.spec?.listen_port || 'N/A'}
+                  </p>
+                </div>
+                {tunnel.core === 'rathole' && (
+                  <>
+                    <div>
+                      <p className="text-gray-500 dark:text-gray-400 mb-1">Rathole Port</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        {tunnel.spec?.remote_addr ? tunnel.spec.remote_addr.split(':')[1] : 'N/A'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 dark:text-gray-400 mb-1">Local Port</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        {tunnel.spec?.local_addr ? tunnel.spec.local_addr.split(':')[1] : 'N/A'}
+                      </p>
+                    </div>
+                  </>
+                )}
+                {tunnel.core === 'xray' && tunnel.spec?.forward_to && (
+                  <div>
+                    <p className="text-gray-500 dark:text-gray-400 mb-1">Forward To</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">
+                      {tunnel.spec.forward_to}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -209,6 +249,10 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
     quota_mb: tunnel.quota_mb,
     expires_days: '',
     expires_date: tunnel.expires_at ? tunnel.expires_at.split('T')[0] : '',
+    remote_port: tunnel.spec?.remote_port || tunnel.spec?.listen_port || 10000,
+    forward_port: tunnel.spec?.forward_to ? tunnel.spec.forward_to.split(':')[1] : '',
+    rathole_remote_addr: tunnel.spec?.remote_addr || '',
+    rathole_local_port: tunnel.spec?.local_addr ? tunnel.spec.local_addr.split(':')[1] : '',
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -226,10 +270,31 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         expires_at = formData.expires_date + 'T00:00:00'
       }
 
+      // Build updated spec
+      const updatedSpec = { ...tunnel.spec }
+      updatedSpec.remote_port = parseInt(formData.remote_port.toString()) || 10000
+      
+      if (tunnel.core === 'rathole') {
+        if (formData.rathole_remote_addr) {
+          const remoteParts = formData.rathole_remote_addr.split(':')
+          const remoteHost = remoteParts[0] || window.location.hostname
+          const remotePort = remoteParts[1] || '23333'
+          updatedSpec.remote_addr = `${remoteHost}:${remotePort}`
+        }
+        if (formData.rathole_local_port) {
+          updatedSpec.local_addr = `127.0.0.1:${formData.rathole_local_port}`
+        }
+      } else if (tunnel.core === 'xray' && (tunnel.type === 'tcp' || tunnel.type === 'ws' || tunnel.type === 'grpc')) {
+        if (formData.forward_port) {
+          updatedSpec.forward_to = `127.0.0.1:${formData.forward_port}`
+        }
+      }
+
       await api.put(`/tunnels/${tunnel.id}`, {
         name: formData.name,
         quota_mb: formData.quota_mb,
         expires_at: expires_at,
+        spec: updatedSpec,
       })
       onSuccess()
     } catch (error) {
@@ -256,7 +321,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Quota (MB, 0 = unlimited)
             </label>
             <input
@@ -265,10 +330,81 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
               onChange={(e) =>
                 setFormData({ ...formData, quota_mb: parseFloat(e.target.value) || 0 })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
               min="0"
             />
           </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Proxy Port
+            </label>
+            <input
+              type="number"
+              value={formData.remote_port}
+              onChange={(e) =>
+                setFormData({ ...formData, remote_port: parseInt(e.target.value) || 10000 })
+              }
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              min="1"
+              max="65535"
+            />
+          </div>
+          
+          {tunnel.core === 'rathole' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Rathole Port
+                </label>
+                <input
+                  type="text"
+                  value={formData.rathole_remote_addr}
+                  onChange={(e) =>
+                    setFormData({ ...formData, rathole_remote_addr: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                  placeholder={`${window.location.hostname}:23333`}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Local Port
+                </label>
+                <input
+                  type="number"
+                  value={formData.rathole_local_port}
+                  onChange={(e) =>
+                    setFormData({ ...formData, rathole_local_port: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                  placeholder="8080"
+                  min="1"
+                  max="65535"
+                />
+              </div>
+            </>
+          )}
+          
+          {tunnel.core === 'xray' && (tunnel.type === 'tcp' || tunnel.type === 'ws' || tunnel.type === 'grpc') && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Xray Panel Port
+              </label>
+              <input
+                type="number"
+                value={formData.forward_port}
+                onChange={(e) =>
+                  setFormData({ ...formData, forward_port: e.target.value })
+                }
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                placeholder="2053"
+                min="1"
+                max="65535"
+              />
+            </div>
+          )}
+          
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -341,9 +477,9 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
     remote_port: 10000,
     forward_to: '127.0.0.1:2053',
     forward_port: '2053',
-    rathole_remote_addr: '',
+    rathole_remote_addr: `${window.location.hostname}:23333`,
     rathole_token: '',
-    rathole_local_addr: '127.0.0.1:8080',
+    rathole_local_port: '8080',
     spec: {} as Record<string, any>,
   })
 
@@ -376,9 +512,13 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
       
       // For Rathole, add required fields
       if (formData.core === 'rathole') {
-        spec.remote_addr = formData.rathole_remote_addr
+        // Parse rathole_remote_addr to get IP and port
+        const remoteParts = formData.rathole_remote_addr.split(':')
+        const remoteHost = remoteParts[0] || window.location.hostname
+        const remotePort = remoteParts[1] || '23333'
+        spec.remote_addr = `${remoteHost}:${remotePort}`
         spec.token = formData.rathole_token
-        spec.local_addr = formData.rathole_local_addr
+        spec.local_addr = `127.0.0.1:${formData.rathole_local_port}`
         spec.remote_port = parseInt(formData.remote_port.toString()) || 10000  // Proxy port for clients
       }
       
@@ -416,7 +556,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
     }
     
     if (core === 'rathole') {
-      return { ...baseSpec, remote_addr: '', token: '', local_addr: '127.0.0.1:8080' }
+      return { ...baseSpec, remote_addr: `${window.location.hostname}:23333`, token: '', local_addr: '127.0.0.1:8080' }
     }
 
     // Xray core types
@@ -500,7 +640,6 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
               >
                 <option value="xray">Xray</option>
-                <option value="wireguard">WireGuard</option>
                 <option value="rathole">Rathole</option>
               </select>
             </div>
@@ -593,7 +732,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
             {formData.core === 'rathole' && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Remote Address (Panel)
+                  Rathole Port
                 </label>
                 <input
                   type="text"
@@ -602,10 +741,10 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                     setFormData({ ...formData, rathole_remote_addr: e.target.value })
                   }
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                  placeholder="panel.example.com:23333"
+                  placeholder={`${window.location.hostname}:23333`}
                   required
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Rathole server address (e.g., panel.example.com:23333 - NOT the panel API port 8000)</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Panel IP:Port for rathole server (e.g., {window.location.hostname}:23333)</p>
               </div>
             )}
           </div>
@@ -647,19 +786,21 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Local Address
+                  Local Port
                 </label>
                 <input
-                  type="text"
-                  value={formData.rathole_local_addr}
+                  type="number"
+                  value={formData.rathole_local_port}
                   onChange={(e) =>
-                    setFormData({ ...formData, rathole_local_addr: e.target.value })
+                    setFormData({ ...formData, rathole_local_port: e.target.value })
                   }
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                  placeholder="127.0.0.1:8080"
+                  placeholder="8080"
+                  min="1"
+                  max="65535"
                   required
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Local service to forward</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Local service port (127.0.0.1:{formData.rathole_local_port || '8080'})</p>
               </div>
             </div>
           )}

@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import { Server, Network, Cpu, MemoryStick } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import api from '../api/client'
-import SmiteLogoDark from '../assets/SmiteD.png'
-import SmiteLogoLight from '../assets/SmiteL.png'
 
 interface Status {
   system: {
@@ -25,21 +23,8 @@ interface Status {
 const Dashboard = () => {
   const [status, setStatus] = useState<Status | null>(null)
   const [loading, setLoading] = useState(true)
-  const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem('darkMode')
-    return saved ? JSON.parse(saved) : false
-  })
 
   useEffect(() => {
-    // Update darkMode state when localStorage changes
-    const updateDarkMode = () => {
-      const saved = localStorage.getItem('darkMode')
-      setDarkMode(saved ? JSON.parse(saved) : false)
-    }
-    updateDarkMode()
-    const storageListener = () => updateDarkMode()
-    window.addEventListener('storage', storageListener)
-    
     const fetchStatus = async () => {
       try {
         const response = await api.get('/status')
@@ -55,7 +40,6 @@ const Dashboard = () => {
     const interval = setInterval(fetchStatus, 5000)
     return () => {
       clearInterval(interval)
-      window.removeEventListener('storage', storageListener)
     }
   }, [])
 
@@ -65,14 +49,7 @@ const Dashboard = () => {
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-8">
-        <img 
-          src={darkMode ? SmiteLogoDark : SmiteLogoLight} 
-          alt="Smite Logo" 
-          className="h-12 w-auto"
-        />
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-      </div>
+      <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8">Dashboard</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatCard
