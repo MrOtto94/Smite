@@ -284,7 +284,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         if (formData.rathole_local_port) {
           updatedSpec.local_addr = `127.0.0.1:${formData.rathole_local_port}`
         }
-      } else if (tunnel.core === 'xray' && (tunnel.type === 'tcp' || tunnel.type === 'ws' || tunnel.type === 'grpc')) {
+      } else if (tunnel.core === 'xray' && (tunnel.type === 'tcp' || tunnel.type === 'udp' || tunnel.type === 'ws' || tunnel.type === 'grpc')) {
         if (formData.forward_port) {
           updatedSpec.forward_to = `127.0.0.1:${formData.forward_port}`
         }
@@ -502,8 +502,8 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
       const spec = getSpecForType(formData.core, formData.type)
       spec.remote_port = parseInt(formData.remote_port.toString()) || 10000
       
-      // For TCP/WS/gRPC tunnels, add forward_to if specified (always use 127.0.0.1:port)
-      if (formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'ws' || formData.type === 'grpc')) {
+      // For TCP/UDP/WS/gRPC tunnels, add forward_to if specified (always use 127.0.0.1:port)
+      if (formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc')) {
         const forwardPort = formData.forward_port || (formData.forward_to ? formData.forward_to.split(':')[1] : '2053')
         if (forwardPort) {
           spec.forward_to = `127.0.0.1:${forwardPort}`
@@ -689,7 +689,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                   : 'Port on node to listen for connections'}
               </p>
             </div>
-            {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'ws' || formData.type === 'grpc') && (
+            {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc') && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Xray Panel Port
@@ -707,13 +707,13 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                   max="65535"
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  {formData.type === 'tcp' 
-                    ? 'Xray panel port (e.g., 3x-ui port)' 
+                  {formData.type === 'tcp' || formData.type === 'udp'
+                    ? 'Xray panel port (e.g., 3x-ui port) to forward to' 
                     : 'Leave empty for VMESS server, or enter port to forward to local service'}
                 </p>
               </div>
             )}
-            {(!(formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'ws' || formData.type === 'grpc'))) && formData.core !== 'rathole' && (
+            {formData.core !== 'rathole' && !(formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc')) && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Quota (MB, 0 = unlimited)
@@ -749,7 +749,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
             )}
           </div>
           
-          {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'ws' || formData.type === 'grpc') && (
+          {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc') && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Quota (MB, 0 = unlimited)
