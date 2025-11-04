@@ -46,25 +46,51 @@ RUN ARCH=$(uname -m) && \
         exit 1; \
     fi && \
     echo "Downloading from: $GOST_ASSET" && \
-    curl -L "$GOST_ASSET" -o /tmp/gost-download -f && \
-    if echo "$GOST_ASSET" | grep -q "\.gz$"; then \
-        gunzip /tmp/gost-download && \
+    if ! curl -L "$GOST_ASSET" -o /tmp/gost-download -f; then \
+        echo "Error: Failed to download gost from $GOST_ASSET"; \
+        exit 1; \
+    fi && \
+    if echo "$GOST_ASSET" | grep -q "\.gz$" && ! echo "$GOST_ASSET" | grep -q "\.tar\.gz"; then \
+        if ! gunzip /tmp/gost-download; then \
+            echo "Error: Failed to gunzip gost"; \
+            exit 1; \
+        fi && \
         mv /tmp/gost-download /usr/local/bin/gost; \
     elif echo "$GOST_ASSET" | grep -q "\.zip$"; then \
-        unzip -q /tmp/gost-download -d /tmp && \
-        find /tmp -name "gost" -type f -executable -exec mv {} /usr/local/bin/gost \; && \
+        if ! unzip -q /tmp/gost-download -d /tmp; then \
+            echo "Error: Failed to unzip gost"; \
+            exit 1; \
+        fi && \
+        GOST_BIN=$(find /tmp -name "gost" -type f -executable | head -1) && \
+        if [ -z "$GOST_BIN" ]; then \
+            echo "Error: Could not find gost binary in archive"; \
+            exit 1; \
+        fi && \
+        mv "$GOST_BIN" /usr/local/bin/gost && \
         rm -rf /tmp/gost* /tmp/gost-download; \
     elif echo "$GOST_ASSET" | grep -q "\.tar\.gz$"; then \
         mv /tmp/gost-download /tmp/gost.tar.gz && \
-        tar -xzf /tmp/gost.tar.gz -C /tmp && \
-        find /tmp -name "gost" -type f -executable -exec mv {} /usr/local/bin/gost \; && \
+        if ! tar -xzf /tmp/gost.tar.gz -C /tmp; then \
+            echo "Error: Failed to extract gost tar.gz"; \
+            exit 1; \
+        fi && \
+        GOST_BIN=$(find /tmp -name "gost" -type f -executable | head -1) && \
+        if [ -z "$GOST_BIN" ]; then \
+            echo "Error: Could not find gost binary in archive"; \
+            exit 1; \
+        fi && \
+        mv "$GOST_BIN" /usr/local/bin/gost && \
         rm -rf /tmp/gost* /tmp/gost.tar.gz; \
     else \
         mv /tmp/gost-download /usr/local/bin/gost; \
     fi && \
     chmod +x /usr/local/bin/gost && \
     rm -f /tmp/gost-download /tmp/gost.tar.gz && \
-    echo "Gost installed successfully" && \
+    if [ ! -f /usr/local/bin/gost ]; then \
+        echo "Error: gost binary not found at /usr/local/bin/gost after installation"; \
+        exit 1; \
+    fi && \
+    echo "Gost installed successfully at /usr/local/bin/gost" && \
     /usr/local/bin/gost -V || echo "Gost version check skipped"
 
 # Stage 3: Python dependencies (cached layer)
