@@ -5,6 +5,7 @@ from sqlalchemy import select
 from typing import List
 from datetime import datetime
 from pydantic import BaseModel
+import logging
 
 from app.database import get_db
 from app.models import Tunnel, Node
@@ -12,6 +13,7 @@ from app.hysteria2_client import Hysteria2Client
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class TunnelCreate(BaseModel):
@@ -133,6 +135,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     if node_address:
                         try:
                             # Use gost for forwarding
+                            logger.info(f"Starting gost forwarding for tunnel {db_tunnel.id}: {db_tunnel.type}://:{remote_port} -> {node_address}:{remote_port}")
                             request.app.state.gost_forwarder.start_forward(
                                 tunnel_id=db_tunnel.id,
                                 local_port=int(remote_port),
@@ -140,6 +143,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                                 remote_port=int(remote_port),
                                 tunnel_type=db_tunnel.type
                             )
+                            logger.info(f"Successfully started gost forwarding for tunnel {db_tunnel.id}")
                         except Exception as e:
                             # Log but don't fail tunnel creation
                             import logging

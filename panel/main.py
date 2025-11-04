@@ -80,11 +80,14 @@ async def lifespan(app: FastAPI):
 async def _restore_forwards():
     """Restore forwarding for active tunnels on startup"""
     try:
+        logger.info("Starting to restore forwarding for active tunnels...")
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
             tunnels = result.scalars().all()
+            logger.info(f"Found {len(tunnels)} active tunnels to restore")
             
             for tunnel in tunnels:
+                logger.info(f"Checking tunnel {tunnel.id}: type={tunnel.type}, core={tunnel.core}")
                 # Only restore xray tunnels (tcp, udp, ws, grpc)
                 needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc"] and tunnel.core == "xray"
                 if not needs_gost_forwarding:
