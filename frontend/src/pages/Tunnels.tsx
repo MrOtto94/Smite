@@ -389,7 +389,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
           {tunnel.core === 'xray' && (tunnel.type === 'tcp' || tunnel.type === 'ws' || tunnel.type === 'grpc') && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Smite Panel Port
+                Xray Panel Port
               </label>
               <input
                 type="number"
@@ -692,7 +692,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
             {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc') && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Smite Panel Port
+                  Xray Panel Port
                 </label>
                 <input
                   type="number"
@@ -708,7 +708,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                   {formData.type === 'tcp' || formData.type === 'udp'
-                    ? 'Smite panel port (e.g., 3x-ui port) to forward to' 
+                    ? 'Xray panel port (e.g., 3x-ui port) to forward to' 
                     : 'Leave empty for VMESS server, or enter port to forward to local service'}
                 </p>
               </div>
