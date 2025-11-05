@@ -65,37 +65,78 @@ bind_addr = "0.0.0.0:{proxy_port}"
                 "config_path": str(config_path)
             }
             
-            # Start rathole server
+            # Start rathole server with log file for debugging
+            log_file = self.config_dir / f"rathole_{tunnel_id}.log"
             try:
+                log_f = open(log_file, 'w', buffering=1)  # Line buffered
+                log_f.write(f"Starting rathole server for tunnel {tunnel_id}\n")
+                log_f.write(f"Config: bind_addr={bind_addr}, proxy_port={proxy_port}\n")
+                log_f.write(f"Config file: {config_path}\n")
+                log_f.write(f"Config content:\n{config}\n")
+                log_f.flush()
                 proc = subprocess.Popen(
                     ["/usr/local/bin/rathole", "-s", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=str(self.config_dir)
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(self.config_dir),
+                    start_new_session=True
                 )
             except FileNotFoundError:
                 # Fallback to system rathole if installed
+                log_f = open(log_file, 'w', buffering=1)
+                log_f.write(f"Starting rathole server (system binary) for tunnel {tunnel_id}\n")
+                log_f.flush()
                 proc = subprocess.Popen(
                     ["rathole", "-s", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=str(self.config_dir)
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(self.config_dir),
+                    start_new_session=True
                 )
             
+            # Store log file handle
+            self.active_servers[f"{tunnel_id}_log"] = log_f
             self.active_servers[tunnel_id] = proc
             
             # Wait a moment to check if process started successfully
-            time.sleep(0.5)
+            time.sleep(1.0)
             if proc.poll() is not None:
                 # Process died immediately
-                stderr = proc.stderr.read().decode() if proc.stderr else "Unknown error"
-                stdout = proc.stdout.read().decode() if proc.stdout else ""
-                error_msg = f"rathole server failed to start: {stderr or stdout}"
-                logger.error(error_msg)
-                del self.active_servers[tunnel_id]
-                if tunnel_id in self.server_configs:
-                    del self.server_configs[tunnel_id]
+                try:
+                    if log_file.exists():
+                        with open(log_file, 'r') as f:
+                            error_output = f.read()
+                    else:
+                        error_output = "Log file not found"
+                    error_msg = f"rathole server failed to start (exit code: {proc.poll()}): {error_output[-500:] if len(error_output) > 500 else error_output}"
+                    logger.error(error_msg)
+                except Exception as e:
+                    error_msg = f"rathole server failed to start (exit code: {proc.poll()}), could not read log: {e}"
+                    logger.error(error_msg)
+                finally:
+                    del self.active_servers[tunnel_id]
+                    if f"{tunnel_id}_log" in self.active_servers:
+                        try:
+                            self.active_servers[f"{tunnel_id}_log"].close()
+                        except:
+                            pass
+                        del self.active_servers[f"{tunnel_id}_log"]
+                    if tunnel_id in self.server_configs:
+                        del self.server_configs[tunnel_id]
                 raise RuntimeError(error_msg)
+            
+            # Verify port is listening
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                port = int(bind_addr.split(':')[1])
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                if result != 0:
+                    logger.warning(f"Rathole server port {port} not listening after start, but process is running. PID: {proc.pid}")
+            except Exception as e:
+                logger.warning(f"Could not verify rathole server port is listening: {e}")
             
             logger.info(f"Started Rathole server for tunnel {tunnel_id} on {bind_addr}, proxy port: {proxy_port}")
             return True
@@ -119,6 +160,14 @@ bind_addr = "0.0.0.0:{proxy_port}"
                 logger.warning(f"Error stopping Rathole server for tunnel {tunnel_id}: {e}")
             finally:
                 del self.active_servers[tunnel_id]
+                # Close log file
+                log_key = f"{tunnel_id}_log"
+                if log_key in self.active_servers:
+                    try:
+                        self.active_servers[log_key].close()
+                    except:
+                        pass
+                    del self.active_servers[log_key]
             
             logger.info(f"Stopped Rathole server for tunnel {tunnel_id}")
         
