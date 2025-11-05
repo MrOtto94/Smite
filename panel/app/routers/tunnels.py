@@ -81,9 +81,72 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     # Auto-apply tunnel immediately
     # Only send to node for rathole tunnels - gost tunnels forward directly without node
     try:
-        # Only apply to node for rathole tunnels
+        # Determine what needs to be started
+        needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "xray"
+        needs_rathole_server = db_tunnel.core == "rathole"
         needs_node_apply = db_tunnel.core == "rathole"
         
+        logger.info(f"Tunnel {db_tunnel.id}: needs_gost_forwarding={needs_gost_forwarding}, needs_rathole_server={needs_rathole_server}")
+        
+        # For rathole, start the server on panel FIRST (before sending to node)
+        # The node client needs the panel server to be running to connect
+        if needs_rathole_server:
+            # Start Rathole server on panel FIRST
+            remote_addr = db_tunnel.spec.get("remote_addr")
+            token = db_tunnel.spec.get("token")
+            proxy_port = db_tunnel.spec.get("remote_port") or db_tunnel.spec.get("listen_port")
+            
+            # Validate remote_addr format
+            if remote_addr and ":" in remote_addr:
+                rathole_port = remote_addr.split(":")[1]
+                # Check if using panel API port (8000) - this will conflict
+                try:
+                    if int(rathole_port) == 8000:
+                        db_tunnel.status = "error"
+                        db_tunnel.error_message = "Rathole server cannot use port 8000 (panel API port). Use a different port like 23333."
+                        await db.commit()
+                        await db.refresh(db_tunnel)
+                        return db_tunnel
+                except ValueError:
+                    pass
+            
+            if remote_addr and token and proxy_port and hasattr(request.app.state, 'rathole_server_manager'):
+                try:
+                    logger.info(f"Starting Rathole server for tunnel {db_tunnel.id}: remote_addr={remote_addr}, token={token}, proxy_port={proxy_port}")
+                    request.app.state.rathole_server_manager.start_server(
+                        tunnel_id=db_tunnel.id,
+                        remote_addr=remote_addr,
+                        token=token,
+                        proxy_port=int(proxy_port)
+                    )
+                    logger.info(f"Successfully started Rathole server for tunnel {db_tunnel.id}")
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"Failed to start Rathole server for tunnel {db_tunnel.id}: {error_msg}", exc_info=True)
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = f"Rathole server error: {error_msg}"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+            else:
+                missing = []
+                if not remote_addr:
+                    missing.append("remote_addr")
+                if not token:
+                    missing.append("token")
+                if not proxy_port:
+                    missing.append("proxy_port")
+                if not hasattr(request.app.state, 'rathole_server_manager'):
+                    missing.append("rathole_server_manager")
+                logger.warning(f"Tunnel {db_tunnel.id}: Missing required fields for Rathole server: {missing}")
+                if not remote_addr or not token or not proxy_port:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = f"Missing required fields for Rathole: {missing}"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+        
+        # Now send to node for rathole tunnels (server must be running first)
         if needs_node_apply:
             client = Hysteria2Client()
             # Update node metadata with API address if not set
@@ -109,6 +172,12 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 error_msg = response.get("message", "Unknown error from node")
                 db_tunnel.error_message = f"Node error: {error_msg}"
                 logger.error(f"Tunnel {db_tunnel.id}: {error_msg}")
+                # Stop rathole server if node failed
+                if needs_rathole_server and hasattr(request.app.state, 'rathole_server_manager'):
+                    try:
+                        request.app.state.rathole_server_manager.stop_server(db_tunnel.id)
+                    except:
+                        pass
                 await db.commit()
                 await db.refresh(db_tunnel)
                 return db_tunnel
@@ -117,22 +186,22 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 db_tunnel.status = "error"
                 db_tunnel.error_message = "Failed to apply tunnel to node. Check node connection."
                 logger.error(f"Tunnel {db_tunnel.id}: Failed to apply to node")
+                # Stop rathole server if node failed
+                if needs_rathole_server and hasattr(request.app.state, 'rathole_server_manager'):
+                    try:
+                        request.app.state.rathole_server_manager.stop_server(db_tunnel.id)
+                    except:
+                        pass
                 await db.commit()
                 await db.refresh(db_tunnel)
                 return db_tunnel
-        
-        # Determine what needs to be started
-        needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "xray"
-        needs_rathole_server = db_tunnel.core == "rathole"
-        
-        logger.info(f"Tunnel {db_tunnel.id}: needs_gost_forwarding={needs_gost_forwarding}, needs_rathole_server={needs_rathole_server}")
         
         # Mark as active (for both gost and rathole) - will be set to error if startup fails
         db_tunnel.status = "active"
         
         try:
             # Start forwarding on panel using gost (for TCP/UDP/WS/gRPC/tcpmux tunnels)
-            # Rathole: reverse tunnel, needs Rathole server on panel
+            # Rathole server already started above
             
             if needs_gost_forwarding:
                 # listen_port: panel port where clients connect
@@ -177,55 +246,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                         db_tunnel.status = "error"
                         db_tunnel.error_message = error_msg
             
-            elif needs_rathole_server:
-                # Start Rathole server on panel
-                remote_addr = db_tunnel.spec.get("remote_addr")
-                token = db_tunnel.spec.get("token")
-                proxy_port = db_tunnel.spec.get("remote_port") or db_tunnel.spec.get("listen_port")
-                
-                # Validate remote_addr format
-                if remote_addr and ":" in remote_addr:
-                    rathole_port = remote_addr.split(":")[1]
-                    # Check if using panel API port (8000) - this will conflict
-                    try:
-                        if int(rathole_port) == 8000:
-                            db_tunnel.status = "error"
-                            db_tunnel.error_message = "Rathole server cannot use port 8000 (panel API port). Use a different port like 23333."
-                            await db.commit()
-                            await db.refresh(db_tunnel)
-                            return db_tunnel
-                    except ValueError:
-                        pass
-                
-                if remote_addr and token and proxy_port and hasattr(request.app.state, 'rathole_server_manager'):
-                    try:
-                        logger.info(f"Starting Rathole server for tunnel {db_tunnel.id}: remote_addr={remote_addr}, token={token}, proxy_port={proxy_port}")
-                        request.app.state.rathole_server_manager.start_server(
-                            tunnel_id=db_tunnel.id,
-                            remote_addr=remote_addr,
-                            token=token,
-                            proxy_port=int(proxy_port)
-                        )
-                        logger.info(f"Successfully started Rathole server for tunnel {db_tunnel.id}")
-                    except Exception as e:
-                        error_msg = str(e)
-                        logger.error(f"Failed to start Rathole server for tunnel {db_tunnel.id}: {error_msg}", exc_info=True)
-                        db_tunnel.status = "error"
-                        db_tunnel.error_message = f"Rathole server error: {error_msg}"
-                else:
-                    missing = []
-                    if not remote_addr:
-                        missing.append("remote_addr")
-                    if not token:
-                        missing.append("token")
-                    if not proxy_port:
-                        missing.append("proxy_port")
-                    if not hasattr(request.app.state, 'rathole_server_manager'):
-                        missing.append("rathole_server_manager")
-                    logger.warning(f"Tunnel {db_tunnel.id}: Missing required fields for Rathole server: {missing}")
-                    if not remote_addr or not token or not proxy_port:
-                        db_tunnel.status = "error"
-                        db_tunnel.error_message = f"Missing required fields for Rathole: {missing}"
+            # Rathole server already started above (before sending to node)
+            # No need to start it again here
         except Exception as e:
             # Catch any exception in the forwarding setup
             logger.error(f"Exception in forwarding setup for tunnel {db_tunnel.id}: {e}", exc_info=True)
