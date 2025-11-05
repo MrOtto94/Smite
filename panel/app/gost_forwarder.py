@@ -43,10 +43,12 @@ class GostForwarder:
             if tunnel_type == "tcp":
                 # TCP forwarding: gost -L=tcp://0.0.0.0:local_port -F=tcp://forward_to
                 # Use 0.0.0.0 to bind to all interfaces (required for host networking)
+                # Add keepalive and transparent forwarding options for better compatibility with protocols like VLESS
                 cmd = [
                     "/usr/local/bin/gost",
-                    f"-L=tcp://0.0.0.0:{local_port}",
-                    f"-F=tcp://{forward_to}"
+                    "-log=stdout",
+                    f"-L=tcp://0.0.0.0:{local_port}?keepalive=true",
+                    f"-F=tcp://{forward_to}?keepalive=true"
                 ]
             elif tunnel_type == "udp":
                 # UDP forwarding: gost -L=udp://0.0.0.0:local_port -F=udp://forward_to
