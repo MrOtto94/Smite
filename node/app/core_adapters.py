@@ -30,91 +30,6 @@ class CoreAdapter(Protocol):
         ...
 
 
-class WireGuardAdapter:
-    """WireGuard tunnel adapter"""
-    name = "wireguard"
-    
-    def __init__(self):
-        self.config_dir = Path("/etc/wireguard")
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.active_interfaces = set()
-    
-    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
-        """Apply WireGuard tunnel"""
-        config = f"""[Interface]
-PrivateKey = {spec.get('private_key', '')}
-Address = {spec.get('address', '10.0.0.1/24')}
-ListenPort = {spec.get('listen_port', 51820)}
-
-[Peer]
-PublicKey = {spec.get('peer_public_key', '')}
-AllowedIPs = {spec.get('allowed_ips', '0.0.0.0/0')}
-Endpoint = {spec.get('endpoint', '')}
-"""
-        
-        config_path = self.config_dir / f"{tunnel_id}.conf"
-        with open(config_path, "w") as f:
-            f.write(config)
-        
-        # Start wireguard
-        try:
-            result = subprocess.run(
-                ["wg-quick", "up", str(config_path)],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            self.active_interfaces.add(tunnel_id)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"WireGuard failed to start: {e.stderr}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("WireGuard start timed out")
-    
-    def remove(self, tunnel_id: str):
-        """Remove WireGuard tunnel"""
-        config_path = self.config_dir / f"{tunnel_id}.conf"
-        if config_path.exists():
-            try:
-                subprocess.run(
-                    ["wg-quick", "down", str(config_path)],
-                    check=False,
-                    timeout=10,
-                    capture_output=True
-                )
-            except:
-                pass
-            config_path.unlink()
-            self.active_interfaces.discard(tunnel_id)
-    
-    def status(self, tunnel_id: str) -> Dict[str, Any]:
-        """Get status"""
-        config_path = self.config_dir / f"{tunnel_id}.conf"
-        interface_name = f"wg-{tunnel_id}"[:15]  # wg-quick creates interfaces
-        
-        # Check if interface exists
-        try:
-            result = subprocess.run(
-                ["ip", "link", "show", interface_name],
-                capture_output=True,
-                timeout=2
-            )
-            is_active = result.returncode == 0
-        except:
-            is_active = False
-        
-        return {
-            "active": config_path.exists() and is_active,
-            "type": "wireguard",
-            "interface": interface_name if is_active else None
-        }
-    
-    def get_usage_mb(self, tunnel_id: str) -> float:
-        """Get usage in MB"""
-        # TODO: Implement WireGuard usage tracking
-        return 0.0
-
-
 class RatholeAdapter:
     """Rathole reverse tunnel adapter"""
     name = "rathole"
@@ -256,7 +171,6 @@ class AdapterManager:
     
     def __init__(self):
         self.adapters: Dict[str, CoreAdapter] = {
-            "wireguard": WireGuardAdapter(),
             "rathole": RatholeAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}

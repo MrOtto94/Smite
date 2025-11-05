@@ -21,7 +21,6 @@ services:
     volumes:
       - ./certs:/etc/smite-node/certs:ro
       - ./config:/etc/smite-node
-      - /etc/wireguard:/etc/wireguard
       - node-data:/var/lib/smite-node
     env_file:
       - .env

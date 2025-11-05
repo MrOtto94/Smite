@@ -27,8 +27,8 @@ class Tunnel(Base):
     
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, nullable=False)
-    core = Column(String, nullable=False)  # xray, wireguard, rathole
-    type = Column(String, nullable=False)  # tcp, udp, ws, grpc, wireguard, rathole
+    core = Column(String, nullable=False)  # xray, rathole
+    type = Column(String, nullable=False)  # tcp, udp, ws, grpc, tcpmux, rathole
     node_id = Column(String, nullable=False)
     spec = Column(JSON, nullable=False)
     quota_mb = Column(Float, default=0)

@@ -437,17 +437,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
       listen_port: 10000,
     }
 
-    // WireGuard and Rathole are separate cores, not types
-    if (core === 'wireguard') {
-      return {
-        ...baseSpec,
-        private_key: '',
-        peer_public_key: '',
-        address: '10.0.0.1/24',
-        allowed_ips: '0.0.0.0/0',
-      }
-    }
-    
+    // Rathole is a separate core, not a type
     if (core === 'rathole') {
       return { ...baseSpec, remote_addr: `${window.location.hostname}:23333`, token: '', local_addr: '127.0.0.1:8080' }
     }
@@ -468,9 +458,9 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
   // When core changes, update type accordingly
   const handleCoreChange = (core: string) => {
     let newType = formData.type
-    if (core === 'wireguard' || core === 'rathole') {
-      newType = core // Type matches core for these
-    } else if (formData.type === 'wireguard' || formData.type === 'rathole') {
+    if (core === 'rathole') {
+      newType = core // Type matches core for rathole
+    } else if (formData.type === 'rathole') {
       newType = 'tcp' // Reset to default smite type
     }
     setFormData({ ...formData, core, type: newType })
@@ -544,9 +534,9 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                 value={formData.type}
                 onChange={(e) => setFormData({ ...formData, type: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                disabled={formData.core === 'wireguard' || formData.core === 'rathole'}
+                disabled={formData.core === 'rathole'}
               >
-                {(formData.core === 'wireguard' || formData.core === 'rathole') ? (
+                {formData.core === 'rathole' ? (
                   <option value={formData.core}>{formData.core.charAt(0).toUpperCase() + formData.core.slice(1)}</option>
                 ) : (
                   <>
