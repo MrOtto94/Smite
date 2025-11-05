@@ -21,7 +21,7 @@ class TunnelCreate(BaseModel):
     name: str
     core: str
     type: str
-    node_id: str
+    node_id: str | None = None
     spec: dict
 
 
@@ -54,18 +54,23 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     
     logger.info(f"Creating tunnel: name={tunnel.name}, type={tunnel.type}, core={tunnel.core}, node_id={tunnel.node_id}")
     
-    # Verify node exists
-    result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
-    node = result.scalar_one_or_none()
-    if not node:
-        raise HTTPException(status_code=404, detail="Node not found")
+    # For GOST tunnels (xray core), node is optional - they forward directly
+    # For Rathole tunnels, node is required
+    node = None
+    if tunnel.node_id:
+        result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+        node = result.scalar_one_or_none()
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+    elif tunnel.core == "rathole":
+        raise HTTPException(status_code=400, detail="Node is required for Rathole tunnels")
     
-    # Create tunnel
+    # Create tunnel - use empty string for node_id if not provided (for GOST tunnels)
     db_tunnel = Tunnel(
         name=tunnel.name,
         core=tunnel.core,
         type=tunnel.type,
-        node_id=tunnel.node_id,
+        node_id=tunnel.node_id or "",
         spec=tunnel.spec,
         status="pending"
     )

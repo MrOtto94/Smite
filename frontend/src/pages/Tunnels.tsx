@@ -397,11 +397,14 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
       const spec = getSpecForType(formData.core, formData.type)
       spec.remote_port = parseInt(formData.remote_port.toString()) || 10000
       
-      // For TCP/UDP/WS/gRPC tunnels, add forward_to if specified (always use 127.0.0.1:port)
-      if (formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc')) {
-        const forwardPort = formData.forward_port || (formData.forward_to ? formData.forward_to.split(':')[1] : '2053')
-        if (forwardPort) {
-          spec.forward_to = `127.0.0.1:${forwardPort}`
+      // For GOST tunnels (TCP/UDP/WS/gRPC/TCPMux), add forward_to if specified
+      if (formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc' || formData.type === 'tcpmux')) {
+        if (formData.forward_to) {
+          spec.forward_to = formData.forward_to
+        } else if (formData.forward_port) {
+          spec.forward_to = `127.0.0.1:${formData.forward_port}`
+        } else {
+          spec.forward_to = '127.0.0.1:2053'  // Default
         }
       }
       
@@ -421,7 +424,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
         name: formData.name,
         core: formData.core,
         type: formData.type,
-        node_id: formData.node_id,
+        node_id: formData.node_id || null,  // null for GOST tunnels (no node needed)
         spec: spec,
       }
       await api.post('/tunnels', payload)
@@ -442,7 +445,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
       return { ...baseSpec, remote_addr: `${window.location.hostname}:23333`, token: '', local_addr: '127.0.0.1:8080' }
     }
 
-    // Smite core types
+    // GOST core types
     switch (type) {
       case 'ws':
         return { ...baseSpec, path: '/', uuid: generateUUID() }
@@ -461,7 +464,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
     if (core === 'rathole') {
       newType = core // Type matches core for rathole
     } else if (formData.type === 'rathole') {
-      newType = 'tcp' // Reset to default smite type
+      newType = 'tcp' // Reset to default GOST type
     }
     setFormData({ ...formData, core, type: newType })
   }
@@ -500,7 +503,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                 value={formData.node_id}
                 onChange={(e) => setFormData({ ...formData, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required
+                required={formData.core === 'rathole'}
               >
                 <option value="">Select a node</option>
                 {nodes.map((node) => (
@@ -522,7 +525,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                 onChange={(e) => handleCoreChange(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
               >
-                <option value="xray">Smite</option>
+                <option value="xray">GOST</option>
                 <option value="rathole">Rathole</option>
               </select>
             </div>
@@ -544,6 +547,7 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
                     <option value="udp">UDP</option>
                     <option value="ws">WebSocket</option>
                     <option value="grpc">gRPC</option>
+                    <option value="tcpmux">TCPMux</option>
                   </>
                 )}
               </select>
@@ -569,30 +573,33 @@ const AddTunnelModal = ({ nodes, onClose, onSuccess }: AddTunnelModalProps) => {
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {formData.core === 'rathole' 
                   ? 'Port on panel for clients to connect (should match local service port)'
-                  : 'Port on node to listen for connections'}
+                  : 'Port on panel to listen for connections'}
               </p>
             </div>
-            {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc') && (
+            {formData.core === 'xray' && (formData.type === 'tcp' || formData.type === 'udp' || formData.type === 'ws' || formData.type === 'grpc' || formData.type === 'tcpmux') && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Xray Panel Port
+                  Forward To
                 </label>
                 <input
-                  type="number"
-                  value={formData.forward_port || (formData.forward_to ? formData.forward_to.split(':')[1] : '2053')}
+                  type="text"
+                  value={formData.forward_to || (formData.forward_port ? `127.0.0.1:${formData.forward_port}` : '127.0.0.1:2053')}
                   onChange={(e) => {
-                    const port = e.target.value || '2053'
-                    setFormData({ ...formData, forward_port: port, forward_to: `127.0.0.1:${port}` })
+                    const value = e.target.value || '127.0.0.1:2053'
+                    setFormData({ ...formData, forward_to: value })
+                    // Extract port for backward compatibility
+                    if (value.includes(':')) {
+                      const parts = value.split(':')
+                      if (parts.length >= 2) {
+                        setFormData(prev => ({ ...prev, forward_port: parts[parts.length - 1] }))
+                      }
+                    }
                   }}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                  placeholder="2053"
-                  min="1"
-                  max="65535"
+                  placeholder="127.0.0.1:2053"
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  {formData.type === 'tcp' || formData.type === 'udp'
-                    ? 'Xray panel port (e.g., 3x-ui port) to forward to' 
-                    : 'Leave empty for VMESS server, or enter port to forward to local service'}
+                  Target address (host:port) to forward traffic to (e.g., 127.0.0.1:2053 for 3x-ui)
                 </p>
               </div>
             )}
