@@ -102,13 +102,43 @@ RUN set -eux; \
     mkdir -p /opt/backhaul; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
-        x86_64|amd64) BACKHAUL_ASSET="backhaul-linux-amd64" ;; \
-        aarch64|arm64) BACKHAUL_ASSET="backhaul-linux-arm64" ;; \
+        x86_64|amd64) PLATFORM="amd64" ;; \
+        aarch64|arm64) PLATFORM="arm64" ;; \
         *) echo "Unsupported architecture: $ARCH"; exit 1 ;; \
     esac; \
-    BACKHAUL_URL="https://github.com/Musixal/Backhaul/releases/latest/download/${BACKHAUL_ASSET}"; \
-    curl -fsSL "$BACKHAUL_URL" -o /opt/backhaul/backhaul; \
+    RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/Musixal/Backhaul/releases/latest)"; \
+    ASSET_URL="$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name | test(\"linux.*${PLATFORM}\")) | .browser_download_url" | head -n1)"; \
+    if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then \
+        echo "Unable to find Backhaul release asset for platform: $PLATFORM"; \
+        exit 1; \
+    fi; \
+    TMP_FILE="$(mktemp)"; \
+    curl -fsSL "$ASSET_URL" -o "$TMP_FILE"; \
+    FILE_NAME="$(basename "$ASSET_URL")"; \
+    case "$FILE_NAME" in \
+        *.tar.gz|*.tgz) \
+            tar -xzf "$TMP_FILE" -C /opt/backhaul; \
+            ;; \
+        *.zip) \
+            unzip -q "$TMP_FILE" -d /opt/backhaul; \
+            ;; \
+        *) \
+            mv "$TMP_FILE" /opt/backhaul/backhaul-download; \
+            ;; \
+    esac; \
+    if [ -f /opt/backhaul/backhaul-download ]; then \
+        mv /opt/backhaul/backhaul-download /opt/backhaul/backhaul; \
+    else \
+        BIN_PATH="$(find /opt/backhaul -maxdepth 1 -type f -name 'backhaul*' | head -n1)"; \
+        if [ -z "$BIN_PATH" ]; then \
+            echo "Backhaul binary not found after extracting $FILE_NAME"; \
+            ls -R /opt/backhaul; \
+            exit 1; \
+        fi; \
+        mv "$BIN_PATH" /opt/backhaul/backhaul; \
+    fi; \
     chmod +x /opt/backhaul/backhaul; \
+    rm -f "$TMP_FILE" 2>/dev/null || true; \
     /opt/backhaul/backhaul --version || true
 
 # Stage 4: Frontend build (cached layer)
