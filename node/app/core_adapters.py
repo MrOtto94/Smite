@@ -48,6 +48,7 @@ class RatholeAdapter:
         self.processes = {}
         self.usage_tracking = {}
         self.tunnel_ports = {}  # Track ports for iptables tracking
+        self.iptables_baseline = {}  # Track baseline iptables counter when rule is added
     
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
         """Apply Rathole tunnel"""
@@ -79,8 +80,13 @@ local_addr = "{local_addr}"
             # Add iptables tracking rule (only counts, doesn't block)
             try:
                 add_tracking_rule(tunnel_id, port, is_ipv6)
+                # Get baseline counter (should be 0 or very small right after rule creation)
+                import time
+                time.sleep(0.1)  # Small delay to ensure rule is active
+                baseline_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
+                self.iptables_baseline[tunnel_id] = baseline_bytes
                 import logging
-                logging.getLogger(__name__).info(f"Added iptables tracking for tunnel {tunnel_id} on port {port} (IPv6={is_ipv6})")
+                logging.getLogger(__name__).info(f"Added iptables tracking for tunnel {tunnel_id} on port {port} (IPv6={is_ipv6}), baseline: {baseline_bytes} bytes")
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(f"Failed to add iptables tracking for tunnel {tunnel_id}: {e}", exc_info=True)
@@ -121,6 +127,9 @@ local_addr = "{local_addr}"
                 import logging
                 logging.getLogger(__name__).warning(f"Failed to remove iptables tracking for tunnel {tunnel_id}: {e}")
             del self.tunnel_ports[tunnel_id]
+            # Clean up baseline
+            if tunnel_id in self.iptables_baseline:
+                del self.iptables_baseline[tunnel_id]
         
         if tunnel_id in self.processes:
             proc = self.processes[tunnel_id]
@@ -167,9 +176,13 @@ local_addr = "{local_addr}"
         if tunnel_id in self.tunnel_ports:
             port, is_ipv6 = self.tunnel_ports[tunnel_id]
             try:
-                iptables_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
+                current_iptables_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
+                # Get baseline (counter when rule was first added)
+                baseline = self.iptables_baseline.get(tunnel_id, 0)
+                # Calculate actual usage as difference from baseline
+                iptables_bytes = max(0, current_iptables_bytes - baseline)
                 if iptables_bytes > 0:
-                    logger.debug(f"Tunnel {tunnel_id}: iptables bytes = {iptables_bytes}")
+                    logger.debug(f"Tunnel {tunnel_id}: iptables current={current_iptables_bytes}, baseline={baseline}, usage={iptables_bytes} bytes")
                 total_bytes = max(total_bytes, iptables_bytes)
             except Exception as e:
                 logger.warning(f"Failed to get iptables bytes for tunnel {tunnel_id}: {e}")
@@ -243,6 +256,7 @@ class BackhaulAdapter:
         self.usage_tracking: Dict[str, float] = {}
         self.log_handles: Dict[str, Any] = {}
         self.tunnel_ports: Dict[str, tuple] = {}  # Track ports for iptables tracking
+        self.iptables_baseline: Dict[str, int] = {}  # Track baseline iptables counter when rule is added
         default_binary = binary_path or Path(
             os.environ.get("BACKHAUL_CLIENT_BINARY", "/usr/local/bin/backhaul")
         )
@@ -332,8 +346,13 @@ class BackhaulAdapter:
                 # Add iptables tracking rule for outbound connections to remote address
                 try:
                     add_tracking_rule_for_remote(tunnel_id, host, port, is_ipv6)
+                    # Get baseline counter (should be 0 or very small right after rule creation)
+                    import time
+                    time.sleep(0.1)  # Small delay to ensure rule is active
+                    baseline_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
+                    self.iptables_baseline[tunnel_id] = baseline_bytes
                     import logging
-                    logging.getLogger(__name__).info(f"Added iptables tracking for Backhaul tunnel {tunnel_id} to {host}:{port} (IPv6={is_ipv6})")
+                    logging.getLogger(__name__).info(f"Added iptables tracking for Backhaul tunnel {tunnel_id} to {host}:{port} (IPv6={is_ipv6}), baseline: {baseline_bytes} bytes")
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).error(f"Failed to add iptables tracking for Backhaul tunnel {tunnel_id}: {e}", exc_info=True)
@@ -352,6 +371,9 @@ class BackhaulAdapter:
                     import logging
                     logging.getLogger(__name__).warning(f"Failed to remove iptables tracking for tunnel {tunnel_id}: {e}")
             del self.tunnel_ports[tunnel_id]
+            # Clean up baseline
+            if tunnel_id in self.iptables_baseline:
+                del self.iptables_baseline[tunnel_id]
         
         if tunnel_id in self.processes:
             proc = self.processes[tunnel_id]
@@ -399,9 +421,13 @@ class BackhaulAdapter:
             if len(port_info) == 4 and port_info[3]:  # Track by remote address
                 host, port, is_ipv6, _ = port_info
                 try:
-                    iptables_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
+                    current_iptables_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
+                    # Get baseline (counter when rule was first added)
+                    baseline = self.iptables_baseline.get(tunnel_id, 0)
+                    # Calculate actual usage as difference from baseline
+                    iptables_bytes = max(0, current_iptables_bytes - baseline)
                     if iptables_bytes > 0:
-                        logger.debug(f"Backhaul tunnel {tunnel_id}: iptables bytes = {iptables_bytes}")
+                        logger.debug(f"Backhaul tunnel {tunnel_id}: iptables current={current_iptables_bytes}, baseline={baseline}, usage={iptables_bytes} bytes")
                     total_bytes = max(total_bytes, iptables_bytes)
                 except Exception as e:
                     logger.warning(f"Failed to get iptables bytes for Backhaul tunnel {tunnel_id}: {e}")
