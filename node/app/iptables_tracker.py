@@ -210,10 +210,12 @@ def get_traffic_bytes(tunnel_id: str, port: int, is_ipv6: bool = False) -> int:
     try:
         result = cmd(["-L", CHAIN_NAME, "-n", "-v", "-x"], check=False)
         total_bytes = 0
+        found_rules = 0
         
         # Sum bytes from all rules matching our comment (both input and output)
         for line in result.stdout.split('\n'):
             if rule_comment in line:
+                found_rules += 1
                 # Extract bytes (second field in -x format)
                 parts = line.split()
                 if len(parts) >= 2:
@@ -221,10 +223,20 @@ def get_traffic_bytes(tunnel_id: str, port: int, is_ipv6: bool = False) -> int:
                         # In -x format, bytes is the second field (after pkts)
                         bytes_val = int(parts[1])
                         total_bytes += bytes_val
-                    except (ValueError, IndexError):
-                        pass
+                        logger.debug(f"Found rule for {tunnel_id}: {bytes_val} bytes")
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Failed to parse bytes from line: {line}: {e}")
+        
+        if found_rules == 0:
+            logger.warning(f"No iptables rules found for tunnel {tunnel_id} (comment: {rule_comment})")
+        else:
+            logger.debug(f"Tunnel {tunnel_id}: Found {found_rules} rules, total {total_bytes} bytes")
         
         return total_bytes
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to read iptables counters for tunnel {tunnel_id}: {e}")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error reading iptables for tunnel {tunnel_id}: {e}", exc_info=True)
         return 0
 

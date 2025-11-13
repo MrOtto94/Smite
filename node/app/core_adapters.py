@@ -76,9 +76,11 @@ local_addr = "{local_addr}"
             # Add iptables tracking rule (only counts, doesn't block)
             try:
                 add_tracking_rule(tunnel_id, port, is_ipv6)
+                import logging
+                logging.getLogger(__name__).info(f"Added iptables tracking for tunnel {tunnel_id} on port {port} (IPv6={is_ipv6})")
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).warning(f"Failed to add iptables tracking for tunnel {tunnel_id}: {e}")
+                logging.getLogger(__name__).error(f"Failed to add iptables tracking for tunnel {tunnel_id}: {e}", exc_info=True)
         
         try:
             proc = subprocess.Popen(
@@ -154,6 +156,8 @@ local_addr = "{local_addr}"
     
     def get_usage_mb(self, tunnel_id: str) -> float:
         """Get usage in MB - tracks cumulative network I/O from process and iptables"""
+        import logging
+        logger = logging.getLogger(__name__)
         total_bytes = 0.0
         
         # Method 1: Track from iptables counters (most accurate, works even with external proxies)
@@ -161,9 +165,11 @@ local_addr = "{local_addr}"
             port, is_ipv6 = self.tunnel_ports[tunnel_id]
             try:
                 iptables_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
+                if iptables_bytes > 0:
+                    logger.debug(f"Tunnel {tunnel_id}: iptables bytes = {iptables_bytes}")
                 total_bytes = max(total_bytes, iptables_bytes)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to get iptables bytes for tunnel {tunnel_id}: {e}")
         
         # Method 2: Track from process I/O (fallback if iptables not available)
         if tunnel_id in self.processes:
