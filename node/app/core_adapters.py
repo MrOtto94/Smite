@@ -79,23 +79,17 @@ local_addr = "{local_addr}"
             self.tunnel_ports[tunnel_id] = (port, is_ipv6)
             # Add iptables tracking rule (only counts, doesn't block)
             try:
-                # Check if rule already exists (tunnel was restarted)
-                import subprocess
-                result = subprocess.run(
-                    ["iptables" if not is_ipv6 else "ip6tables", "-L", "SMITE_TRACK", "-n", "-v", "-x"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                rule_exists = f"smite-{tunnel_id}" in result.stdout
+                # Always remove existing rule first to reset counter, then add fresh rule
+                # This ensures baseline starts at 0 for accurate tracking
+                try:
+                    remove_tracking_rule(tunnel_id, port, is_ipv6)
+                except:
+                    pass  # Rule might not exist, that's fine
                 
-                if not rule_exists:
-                    add_tracking_rule(tunnel_id, port, is_ipv6)
-                    # Get baseline immediately after rule creation (should be 0)
-                    baseline_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
-                else:
-                    # Rule already exists, use current counter as baseline (tunnel restarted)
-                    baseline_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
+                # Add fresh rule (counter will start at 0)
+                add_tracking_rule(tunnel_id, port, is_ipv6)
+                # Get baseline immediately after rule creation (should be 0)
+                baseline_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
                 
                 self.iptables_baseline[tunnel_id] = baseline_bytes
                 import logging
@@ -180,39 +174,25 @@ local_addr = "{local_addr}"
         }
     
     def get_usage_mb(self, tunnel_id: str) -> float:
-        """Get usage in MB - tracks cumulative network I/O from process and iptables"""
+        """Get usage in MB - tracks from iptables counters only (most accurate)"""
         import logging
         logger = logging.getLogger(__name__)
         total_bytes = 0.0
         
-        # Method 1: Track from iptables counters (most accurate, works even with external proxies)
+        # Track from iptables counters (most accurate, works even with external proxies)
         if tunnel_id in self.tunnel_ports:
             port, is_ipv6 = self.tunnel_ports[tunnel_id]
             try:
                 current_iptables_bytes = get_traffic_bytes(tunnel_id, port, is_ipv6)
-                # Get baseline (counter when rule was first added)
+                # Get baseline (counter when rule was first added, should be 0)
                 baseline = self.iptables_baseline.get(tunnel_id, 0)
                 # Calculate actual usage as difference from baseline
                 iptables_bytes = max(0, current_iptables_bytes - baseline)
                 if iptables_bytes > 0:
                     logger.debug(f"Tunnel {tunnel_id}: iptables current={current_iptables_bytes}, baseline={baseline}, usage={iptables_bytes} bytes")
-                total_bytes = max(total_bytes, iptables_bytes)
+                total_bytes = iptables_bytes
             except Exception as e:
                 logger.warning(f"Failed to get iptables bytes for tunnel {tunnel_id}: {e}")
-        
-        # Method 2: Track from process I/O (fallback if iptables not available)
-        if tunnel_id in self.processes:
-            proc = self.processes[tunnel_id]
-            try:
-                proc_info = psutil.Process(proc.pid)
-                try:
-                    io_counters = proc_info.io_counters()
-                    process_bytes = io_counters.read_bytes + io_counters.write_bytes
-                    total_bytes = max(total_bytes, process_bytes)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
-                    pass
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
-                pass
         
         # Convert to MB and return directly (panel handles cumulative tracking)
         return total_bytes / (1024 * 1024)
@@ -350,23 +330,17 @@ class BackhaulAdapter:
                 self.tunnel_ports[tunnel_id] = (host, port, is_ipv6, True)  # True = track by remote address
                 # Add iptables tracking rule for outbound connections to remote address
                 try:
-                    # Check if rule already exists (tunnel was restarted)
-                    import subprocess
-                    result = subprocess.run(
-                        ["iptables" if not is_ipv6 else "ip6tables", "-L", "SMITE_TRACK", "-n", "-v", "-x"],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    rule_exists = f"smite-{tunnel_id}" in result.stdout
+                    # Always remove existing rule first to reset counter, then add fresh rule
+                    # This ensures baseline starts at 0 for accurate tracking
+                    try:
+                        remove_tracking_rule_for_remote(tunnel_id, host, port, is_ipv6)
+                    except:
+                        pass  # Rule might not exist, that's fine
                     
-                    if not rule_exists:
-                        add_tracking_rule_for_remote(tunnel_id, host, port, is_ipv6)
-                        # Get baseline immediately after rule creation (should be 0)
-                        baseline_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
-                    else:
-                        # Rule already exists, use current counter as baseline (tunnel restarted)
-                        baseline_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
+                    # Add fresh rule (counter will start at 0)
+                    add_tracking_rule_for_remote(tunnel_id, host, port, is_ipv6)
+                    # Get baseline immediately after rule creation (should be 0)
+                    baseline_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
                     
                     self.iptables_baseline[tunnel_id] = baseline_bytes
                     import logging
@@ -428,38 +402,27 @@ class BackhaulAdapter:
         }
 
     def get_usage_mb(self, tunnel_id: str) -> float:
-        """Get usage in MB - tracks from process I/O and iptables (by remote address)"""
+        """Get usage in MB - tracks from iptables counters only (by remote address)"""
         import logging
         logger = logging.getLogger(__name__)
         total_bytes = 0.0
         
-        # Method 1: Track from iptables counters (by remote address)
+        # Track from iptables counters (by remote address)
         if tunnel_id in self.tunnel_ports:
             port_info = self.tunnel_ports[tunnel_id]
             if len(port_info) == 4 and port_info[3]:  # Track by remote address
                 host, port, is_ipv6, _ = port_info
                 try:
                     current_iptables_bytes = get_traffic_bytes_for_remote(tunnel_id, host, port, is_ipv6)
-                    # Get baseline (counter when rule was first added)
+                    # Get baseline (counter when rule was first added, should be 0)
                     baseline = self.iptables_baseline.get(tunnel_id, 0)
                     # Calculate actual usage as difference from baseline
                     iptables_bytes = max(0, current_iptables_bytes - baseline)
                     if iptables_bytes > 0:
                         logger.debug(f"Backhaul tunnel {tunnel_id}: iptables current={current_iptables_bytes}, baseline={baseline}, usage={iptables_bytes} bytes")
-                    total_bytes = max(total_bytes, iptables_bytes)
+                    total_bytes = iptables_bytes
                 except Exception as e:
                     logger.warning(f"Failed to get iptables bytes for Backhaul tunnel {tunnel_id}: {e}")
-        
-        # Method 2: Track from process I/O (fallback)
-        if tunnel_id in self.processes:
-            proc = self.processes[tunnel_id]
-            try:
-                proc_info = psutil.Process(proc.pid)
-                io_counters = proc_info.io_counters()
-                process_bytes = io_counters.read_bytes + io_counters.write_bytes
-                total_bytes = max(total_bytes, process_bytes)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
-                pass
         
         # Convert to MB and return directly (panel handles cumulative tracking)
         return total_bytes / (1024 * 1024)
