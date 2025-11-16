@@ -23,6 +23,7 @@ from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
 from app.backhaul_manager import backhaul_manager
 from app.chisel_server import chisel_server_manager
+from app.hysteria2_client import Hysteria2Client
 import logging
 
 logging.basicConfig(
@@ -66,6 +67,9 @@ async def lifespan(app: FastAPI):
     await _restore_rathole_servers()
     await _restore_backhaul_servers()
     await _restore_chisel_servers()
+    
+    # Restore node-side tunnels after panel-side is restored
+    await _restore_node_tunnels()
     
     yield
     
@@ -214,10 +218,121 @@ async def _restore_chisel_servers():
         logger.error("Error restoring Chisel servers: %s", exc)
 
 
+async def _restore_node_tunnels():
+    """Restore node-side tunnels for active tunnels after panel restart"""
+    try:
+        logger.info("Starting to restore node-side tunnels...")
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+            tunnels = result.scalars().all()
+            
+            # Filter tunnels that need node-side restoration
+            node_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel"] and t.node_id]
+            
+            if not node_tunnels:
+                logger.info("No node-side tunnels to restore")
+                return
+            
+            logger.info(f"Found {len(node_tunnels)} active node-side tunnels to restore")
+            
+            client = Hysteria2Client()
+            
+            for tunnel in node_tunnels:
+                try:
+                    result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+                    node = result.scalar_one_or_none()
+                    if not node:
+                        logger.warning(f"Tunnel {tunnel.id}: Node {tunnel.node_id} not found, skipping")
+                        continue
+                    
+                    # Prepare spec for node
+                    spec_for_node = tunnel.spec.copy() if tunnel.spec else {}
+                    
+                    # For Chisel, construct server_url
+                    if tunnel.core == "chisel":
+                        listen_port = spec_for_node.get("listen_port") or spec_for_node.get("remote_port") or spec_for_node.get("server_port")
+                        use_ipv6 = spec_for_node.get("use_ipv6", False)
+                        if listen_port:
+                            # Get panel host - prioritize spec.panel_host (set by frontend)
+                            panel_host = spec_for_node.get("panel_host")
+                            
+                            # If not in spec, try node's panel_address from metadata
+                            if not panel_host:
+                                panel_address = node.node_metadata.get("panel_address", "")
+                                if panel_address:
+                                    # Extract host from panel_address
+                                    if "://" in panel_address:
+                                        panel_address = panel_address.split("://", 1)[1]
+                                    if ":" in panel_address:
+                                        panel_host = panel_address.split(":")[0]
+                                    else:
+                                        panel_host = panel_address
+                            
+                            # Fallback: use panel_domain from settings
+                            if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1"]:
+                                if settings.panel_domain:
+                                    panel_host = settings.panel_domain
+                            
+                            # Final fallback: use node's fingerprint (if it's an IP)
+                            if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1"]:
+                                # Try to use node's IP from metadata
+                                node_ip = node.node_metadata.get("ip_address") or node.fingerprint
+                                if node_ip and node_ip not in ["localhost", "127.0.0.1", "::1"]:
+                                    panel_host = node_ip
+                                else:
+                                    logger.warning(f"Chisel tunnel {tunnel.id}: Could not determine panel host, using localhost. Node may not be able to connect.")
+                                    panel_host = "localhost"
+                            
+                            # Format host for IPv6 (needs brackets)
+                            from app.utils import format_address_port
+                            if use_ipv6:
+                                formatted_host = format_address_port(panel_host, None)
+                                if "[" in formatted_host:
+                                    server_url = f"http://{formatted_host}:{listen_port}"
+                                else:
+                                    server_url = f"http://[::1]:{listen_port}"
+                            else:
+                                server_url = f"http://{panel_host}:{listen_port}"
+                            
+                            spec_for_node["server_url"] = server_url
+                            spec_for_node["remote_port"] = int(listen_port)
+                            logger.info(f"Chisel tunnel {tunnel.id}: server_url={server_url}, listen_port={listen_port}, use_ipv6={use_ipv6}, panel_host={panel_host}")
+                    
+                    # Ensure node has api_address
+                    if not node.node_metadata.get("api_address"):
+                        node.node_metadata["api_address"] = f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+                        await db.commit()
+                    
+                    # Apply tunnel to node
+                    logger.info(f"Restoring tunnel {tunnel.id} on node {node.id}")
+                    response = await client.send_to_node(
+                        node_id=node.id,
+                        endpoint="/api/agent/tunnels/apply",
+                        data={
+                            "tunnel_id": tunnel.id,
+                            "core": tunnel.core,
+                            "type": tunnel.type,
+                            "spec": spec_for_node
+                        }
+                    )
+                    
+                    if response.get("status") == "error":
+                        error_msg = response.get("message", "Unknown error from node")
+                        logger.error(f"Failed to restore tunnel {tunnel.id} on node {node.id}: {error_msg}")
+                    else:
+                        logger.info(f"Successfully restored tunnel {tunnel.id} on node {node.id}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to restore tunnel {tunnel.id} on node: {e}", exc_info=True)
+                    
+    except Exception as e:
+        logger.error(f"Error restoring node tunnels: {e}", exc_info=True)
+
+
 app = FastAPI(
     title="Smite Panel",
     description="Tunneling Control Panel",
-    version="1.0.0",
+    version="0.1.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,

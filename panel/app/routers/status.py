@@ -10,6 +10,17 @@ from app.models import Tunnel, Node
 
 router = APIRouter()
 
+# Version constant - should match Docker image tag or be set via environment variable
+VERSION = "0.1.0"
+
+
+@router.get("/version")
+async def get_version():
+    """Get panel version"""
+    import os
+    # Allow version to be overridden by environment variable
+    return {"version": os.getenv("SMITE_VERSION", VERSION)}
+
 
 @router.get("")
 async def get_status(db: AsyncSession = Depends(get_db)):

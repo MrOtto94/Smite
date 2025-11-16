@@ -1,4 +1,5 @@
 """Chisel server management for panel"""
+import os
 import subprocess
 import time
 import logging
@@ -69,8 +70,8 @@ class ChiselServerManager:
             }
             
             log_file = self.config_dir / f"chisel_{tunnel_id}.log"
+            log_f = open(log_file, 'w', buffering=1)
             try:
-                log_f = open(log_file, 'w', buffering=1)
                 log_f.write(f"Starting chisel server for tunnel {tunnel_id}\n")
                 log_f.write(f"Config: server_port={server_port}, auth={auth is not None}, fingerprint={fingerprint is not None}\n")
                 log_f.write(f"Command: {' '.join(cmd)}\n")
@@ -83,7 +84,6 @@ class ChiselServerManager:
                     start_new_session=True
                 )
             except FileNotFoundError:
-                log_f = open(log_file, 'w', buffering=1)
                 log_f.write(f"Starting chisel server (system binary) for tunnel {tunnel_id}\n")
                 log_f.flush()
                 proc = subprocess.Popen(
@@ -94,6 +94,7 @@ class ChiselServerManager:
                     start_new_session=True
                 )
             
+            # Store log file handle to keep it open (prevents subprocess from exiting)
             self.active_servers[f"{tunnel_id}_log"] = log_f
             self.active_servers[tunnel_id] = proc
             
@@ -184,15 +185,24 @@ class ChiselServerManager:
         """Get list of tunnel IDs with active servers"""
         active = []
         for tunnel_id, proc in list(self.active_servers.items()):
-            if isinstance(proc, subprocess.Popen) and proc.poll() is None:
-                active.append(tunnel_id)
-            elif not isinstance(proc, subprocess.Popen):
-                # Skip log file handles
+            # Skip log file handles (they have _log suffix)
+            if tunnel_id.endswith("_log"):
                 continue
-            else:
-                del self.active_servers[tunnel_id]
-                if tunnel_id in self.server_configs:
-                    del self.server_configs[tunnel_id]
+            if isinstance(proc, subprocess.Popen):
+                if proc.poll() is None:
+                    active.append(tunnel_id)
+                else:
+                    # Process has exited, clean it up
+                    del self.active_servers[tunnel_id]
+                    log_key = f"{tunnel_id}_log"
+                    if log_key in self.active_servers:
+                        try:
+                            self.active_servers[log_key].close()
+                        except:
+                            pass
+                        del self.active_servers[log_key]
+                    if tunnel_id in self.server_configs:
+                        del self.server_configs[tunnel_id]
         return active
     
     def cleanup_all(self):
