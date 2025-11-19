@@ -703,10 +703,13 @@ def cmd_restart(args):
     print("Restarting panel...")
     run_docker_compose(["stop", "smite-panel"])
     run_docker_compose(["rm", "-f", "smite-panel"])
-    result = run_docker_compose(["up", "-d", "--no-deps", "smite-panel"], capture_output=True)
-    if result.returncode != 0:
-        print(result.stderr)
-        sys.exit(result.returncode)
+    run_docker_compose(["up", "-d", "--no-deps", "smite-panel"])
+    
+    import time
+    time.sleep(2)
+    result = subprocess.run(["docker", "ps", "--filter", "name=smite-panel", "--format", "{{.Status}}"], capture_output=True, text=True)
+    if not result.stdout.strip() or "Up" not in result.stdout:
+        print("Warning: Panel container may not be running. Check logs with: docker logs smite-panel")
     
     result = subprocess.run(["docker", "ps", "--filter", "name=smite-nginx", "--format", "{{.Names}}"], capture_output=True, text=True)
     if result.stdout.strip():
