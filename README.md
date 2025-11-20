@@ -151,7 +151,7 @@ smite logs              # View panel logs
 **Configuration:**
 ```bash
 smite edit              # Edit docker-compose.yml
-smite edit-env         # Edit .env file
+smite edit-env          # Edit .env file
 ```
 
 ### Node CLI (`smite-node`)
