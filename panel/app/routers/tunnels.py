@@ -62,7 +62,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         node = result.scalar_one_or_none()
         if not node:
             raise HTTPException(status_code=404, detail="Node not found")
-    elif tunnel.core in {"rathole", "backhaul", "chisel"}:
+    elif tunnel.core in {"rathole", "backhaul", "chisel", "frp"}:
         raise HTTPException(status_code=400, detail=f"Node is required for {tunnel.core.title()} tunnels")
     
     db_tunnel = Tunnel(
@@ -82,20 +82,23 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         needs_rathole_server = db_tunnel.core == "rathole"
         needs_backhaul_server = db_tunnel.core == "backhaul"
         needs_chisel_server = db_tunnel.core == "chisel"
-        needs_node_apply = db_tunnel.core in {"rathole", "backhaul", "chisel"}
+        needs_frp_server = db_tunnel.core == "frp"
+        needs_node_apply = db_tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
         
         logger.info(
-            "Tunnel %s: gost=%s, rathole=%s, backhaul=%s, chisel=%s",
+            "Tunnel %s: gost=%s, rathole=%s, backhaul=%s, chisel=%s, frp=%s",
             db_tunnel.id,
             needs_gost_forwarding,
             needs_rathole_server,
             needs_backhaul_server,
             needs_chisel_server,
+            needs_frp_server,
         )
         
         backhaul_started = False
         rathole_started = False
         chisel_started = False
+        frp_started = False
         
         if needs_backhaul_server:
             manager = getattr(request.app.state, "backhaul_manager", None)
@@ -239,6 +242,57 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     await db.refresh(db_tunnel)
                     return db_tunnel
         
+        if needs_frp_server:
+            bind_port = db_tunnel.spec.get("bind_port", 7000)
+            token = db_tunnel.spec.get("token")
+            
+            if bind_port:
+                from app.utils import parse_address_port
+                try:
+                    if int(bind_port) == 8000:
+                        db_tunnel.status = "error"
+                        db_tunnel.error_message = "FRP server cannot use port 8000 (panel API port). Use a different port like 7000."
+                        await db.commit()
+                        await db.refresh(db_tunnel)
+                        return db_tunnel
+                except (ValueError, TypeError):
+                    pass
+            
+            if bind_port and hasattr(request.app.state, 'frp_server_manager'):
+                try:
+                    logger.info(f"Starting FRP server for tunnel {db_tunnel.id}: bind_port={bind_port}, token={'set' if token else 'none'}")
+                    request.app.state.frp_server_manager.start_server(
+                        tunnel_id=db_tunnel.id,
+                        bind_port=int(bind_port),
+                        token=token
+                    )
+                    time.sleep(1.0)
+                    if not request.app.state.frp_server_manager.is_running(db_tunnel.id):
+                        raise RuntimeError("FRP server process started but is not running")
+                    frp_started = True
+                    logger.info(f"Successfully started FRP server for tunnel {db_tunnel.id}")
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"Failed to start FRP server for tunnel {db_tunnel.id}: {error_msg}", exc_info=True)
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = f"FRP server error: {error_msg}"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+            else:
+                missing = []
+                if not bind_port:
+                    missing.append("bind_port")
+                if not hasattr(request.app.state, 'frp_server_manager'):
+                    missing.append("frp_server_manager")
+                logger.warning(f"Tunnel {db_tunnel.id}: Missing required fields for FRP server: {missing}")
+                if not bind_port:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = f"Missing required fields for FRP: {missing}"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+        
         if needs_node_apply:
             if not node:
                 raise HTTPException(status_code=400, detail=f"Node is required for {db_tunnel.core.title()} tunnels")
@@ -294,6 +348,45 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     spec_for_node["remote_port"] = int(listen_port)
                     logger.info(f"Chisel tunnel {db_tunnel.id}: server_url={server_url}, server_control_port={server_control_port}, reverse_port={reverse_port}, use_ipv6={use_ipv6}, panel_host={panel_host}")
             
+            if needs_frp_server:
+                bind_port = spec_for_node.get("bind_port", 7000)
+                token = spec_for_node.get("token")
+                
+                panel_host = spec_for_node.get("panel_host")
+                
+                if not panel_host:
+                    panel_address = node.node_metadata.get("panel_address", "")
+                    if panel_address:
+                        if "://" in panel_address:
+                            panel_address = panel_address.split("://", 1)[1]
+                        if ":" in panel_address:
+                            panel_host = panel_address.split(":")[0]
+                        else:
+                            panel_host = panel_address
+                
+                if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1"]:
+                    panel_host = request.url.hostname
+                    if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1"]:
+                        forwarded_host = request.headers.get("X-Forwarded-Host")
+                        if forwarded_host:
+                            panel_host = forwarded_host.split(":")[0] if ":" in forwarded_host else forwarded_host
+                
+                if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1"]:
+                    logger.warning(f"FRP tunnel {db_tunnel.id}: Could not determine panel host, using request hostname: {request.url.hostname}. Node may not be able to connect if this is localhost.")
+                    panel_host = request.url.hostname or "localhost"
+                
+                from app.utils import is_valid_ipv6_address
+                if is_valid_ipv6_address(panel_host):
+                    server_addr = f"[{panel_host}]"
+                else:
+                    server_addr = panel_host
+                
+                spec_for_node["server_addr"] = server_addr
+                spec_for_node["server_port"] = int(bind_port)
+                if token:
+                    spec_for_node["token"] = token
+                logger.info(f"FRP tunnel {db_tunnel.id}: server_addr={server_addr}, server_port={bind_port}, token={'set' if token else 'none'}, panel_host={panel_host}")
+            
             logger.info(f"Applying tunnel {db_tunnel.id} to node {node.id}")
             response = await client.send_to_node(
                 node_id=node.id,
@@ -321,6 +414,16 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                         request.app.state.backhaul_manager.stop_server(db_tunnel.id)
                     except Exception:
                         pass
+                if needs_chisel_server and hasattr(request.app.state, 'chisel_server_manager'):
+                    try:
+                        request.app.state.chisel_server_manager.stop_server(db_tunnel.id)
+                    except Exception:
+                        pass
+                if needs_frp_server and hasattr(request.app.state, 'frp_server_manager'):
+                    try:
+                        request.app.state.frp_server_manager.stop_server(db_tunnel.id)
+                    except Exception:
+                        pass
                 await db.commit()
                 await db.refresh(db_tunnel)
                 return db_tunnel
@@ -337,6 +440,16 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 if needs_backhaul_server and hasattr(request.app.state, "backhaul_manager"):
                     try:
                         request.app.state.backhaul_manager.stop_server(db_tunnel.id)
+                    except Exception:
+                        pass
+                if needs_chisel_server and hasattr(request.app.state, 'chisel_server_manager'):
+                    try:
+                        request.app.state.chisel_server_manager.stop_server(db_tunnel.id)
+                    except Exception:
+                        pass
+                if needs_frp_server and hasattr(request.app.state, 'frp_server_manager'):
+                    try:
+                        request.app.state.frp_server_manager.stop_server(db_tunnel.id)
                     except Exception:
                         pass
                 await db.commit()
@@ -662,6 +775,7 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
     needs_rathole_server = tunnel.core == "rathole"
     needs_backhaul_server = tunnel.core == "backhaul"
     needs_chisel_server = tunnel.core == "chisel"
+    needs_frp_server = tunnel.core == "frp"
     
     if needs_gost_forwarding:
         if hasattr(request.app.state, 'gost_forwarder'):
@@ -692,6 +806,13 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
             except Exception as e:
                 import logging
                 logging.error(f"Failed to stop Chisel server: {e}")
+    elif needs_frp_server:
+        if hasattr(request.app.state, 'frp_server_manager'):
+            try:
+                request.app.state.frp_server_manager.stop_server(tunnel.id)
+            except Exception as e:
+                import logging
+                logging.error(f"Failed to stop FRP server: {e}")
     
     if tunnel.status == "active":
         result = await db.execute(select(Node).where(Node.id == tunnel.node_id))

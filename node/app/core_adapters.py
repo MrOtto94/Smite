@@ -531,6 +531,169 @@ class ChiselAdapter:
         }
 
 
+class FrpAdapter:
+    """FRP reverse tunnel adapter"""
+    name = "frp"
+    
+    def __init__(self):
+        self.config_dir = Path("/etc/smite-node/frp")
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes = {}
+        self.log_handles = {}
+    
+    def _resolve_binary_path(self) -> Path:
+        """Resolve frpc binary path"""
+        env_path = os.environ.get("FRPC_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        
+        common_paths = [
+            Path("/usr/local/bin/frpc"),
+            Path("/usr/bin/frpc"),
+        ]
+        
+        for path in common_paths:
+            if path.exists() and path.is_file():
+                return path
+        
+        resolved = shutil.which("frpc")
+        if resolved:
+            return Path(resolved)
+        
+        raise FileNotFoundError(
+            "frpc binary not found. Expected at FRPC_BINARY, '/usr/local/bin/frpc', or in PATH."
+        )
+    
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply FRP tunnel"""
+        if tunnel_id in self.processes:
+            logger.info(f"FRP tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+        
+        server_addr = spec.get('server_addr', '').strip()
+        server_port = spec.get('server_port', 7000)
+        token = spec.get('token')
+        tunnel_type = spec.get('type', 'tcp').lower()
+        local_port = spec.get('local_port')
+        remote_port = spec.get('remote_port') or spec.get('listen_port')
+        local_ip = spec.get('local_ip', '127.0.0.1')
+        
+        if not server_addr:
+            raise ValueError("FRP requires 'server_addr' (panel server address) in spec")
+        if not remote_port:
+            raise ValueError("FRP requires 'remote_port' or 'listen_port' in spec")
+        if not local_port:
+            raise ValueError("FRP requires 'local_port' in spec")
+        if tunnel_type not in ['tcp', 'udp']:
+            raise ValueError(f"FRP only supports 'tcp' and 'udp' types, got '{tunnel_type}'")
+        
+        # Create FRP client config file
+        config_file = self.config_dir / f"frpc_{tunnel_id}.toml"
+        with open(config_file, 'w') as f:
+            f.write(f'serverAddr = "{server_addr}"\n')
+            f.write(f'serverPort = {server_port}\n')
+            if token:
+                f.write(f'token = "{token}"\n')
+            f.write('\n')
+            f.write('[[proxies]]\n')
+            f.write(f'name = "{tunnel_id}"\n')
+            f.write(f'type = "{tunnel_type}"\n')
+            f.write(f'localIP = "{local_ip}"\n')
+            f.write(f'localPort = {local_port}\n')
+            f.write(f'remotePort = {remote_port}\n')
+        
+        logger.info(f"FRP tunnel {tunnel_id}: type={tunnel_type}, local={local_ip}:{local_port}, remote={remote_port}, server={server_addr}:{server_port}")
+        
+        binary_path = self._resolve_binary_path()
+        cmd = [
+            str(binary_path),
+            "-c", str(config_file)
+        ]
+        
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, 'w', buffering=1)
+        try:
+            log_f.write(f"Starting FRP client for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.write(f"Config: type={tunnel_type}, local={local_ip}:{local_port}, remote={remote_port}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True
+            )
+            self.log_handles[tunnel_id] = log_f
+            self.processes[tunnel_id] = proc
+            time.sleep(1.0)
+            if proc.poll() is not None:
+                stderr = ""
+                if log_file.exists():
+                    with open(log_file, 'r') as f:
+                        stderr = f.read()
+                if tunnel_id in self.log_handles:
+                    try:
+                        self.log_handles[tunnel_id].close()
+                    except:
+                        pass
+                    del self.log_handles[tunnel_id]
+                raise RuntimeError(f"frpc failed to start: {stderr[-500:] if len(stderr) > 500 else stderr}")
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("frpc binary not found. Please install frp.")
+    
+    def remove(self, tunnel_id: str):
+        """Remove FRP tunnel"""
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except:
+                pass
+            del self.processes[tunnel_id]
+        
+        if tunnel_id in self.log_handles:
+            try:
+                self.log_handles[tunnel_id].close()
+            except:
+                pass
+            del self.log_handles[tunnel_id]
+        
+        # Clean up config file
+        config_file = self.config_dir / f"frpc_{tunnel_id}.toml"
+        if config_file.exists():
+            try:
+                config_file.unlink()
+            except:
+                pass
+        
+        try:
+            subprocess.run(["pkill", "-f", f"frpc.*{tunnel_id}"], check=False, timeout=3)
+        except:
+            pass
+    
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            is_running = proc.poll() is None
+        
+        return {
+            "active": is_running,
+            "type": "frp",
+            "process_running": is_running
+        }
+
+
 class AdapterManager:
     """Manager for core adapters"""
     
@@ -539,6 +702,7 @@ class AdapterManager:
             "rathole": RatholeAdapter(),
             "backhaul": BackhaulAdapter(),
             "chisel": ChiselAdapter(),
+            "frp": FrpAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}
     

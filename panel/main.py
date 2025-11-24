@@ -23,6 +23,7 @@ from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
 from app.backhaul_manager import backhaul_manager
 from app.chisel_server import chisel_server_manager
+from app.frp_server import frp_server_manager
 from app.hysteria2_client import Hysteria2Client
 import logging
 
@@ -61,12 +62,14 @@ async def lifespan(app: FastAPI):
     app.state.rathole_server_manager = rathole_server_manager
     app.state.backhaul_manager = backhaul_manager
     app.state.chisel_server_manager = chisel_server_manager
+    app.state.frp_server_manager = frp_server_manager
     
     await _restore_forwards()
     
     await _restore_rathole_servers()
     await _restore_backhaul_servers()
     await _restore_chisel_servers()
+    await _restore_frp_servers()
     
     # Restore node-side tunnels after panel-side is restored
     await _restore_node_tunnels()
@@ -81,6 +84,7 @@ async def lifespan(app: FastAPI):
     rathole_server_manager.cleanup_all()
     backhaul_manager.cleanup_all()
     chisel_server_manager.cleanup_all()
+    frp_server_manager.cleanup_all()
 
 
 async def _restore_forwards():
@@ -223,6 +227,39 @@ async def _restore_chisel_servers():
         logger.error("Error restoring Chisel servers: %s", exc)
 
 
+async def _restore_frp_servers():
+    """Restore FRP servers for active tunnels on startup"""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+            tunnels = result.scalars().all()
+            
+            for tunnel in tunnels:
+                if tunnel.core != "frp":
+                    continue
+                
+                bind_port = tunnel.spec.get("bind_port", 7000)
+                token = tunnel.spec.get("token")
+                
+                if not bind_port:
+                    continue
+                
+                try:
+                    frp_server_manager.start_server(
+                        tunnel_id=tunnel.id,
+                        bind_port=int(bind_port),
+                        token=token
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to restore FRP server for tunnel %s: %s",
+                        tunnel.id,
+                        exc,
+                    )
+    except Exception as exc:
+        logger.error("Error restoring FRP servers: %s", exc)
+
+
 async def _restore_node_tunnels():
     """Restore node-side tunnels for active tunnels after panel restart"""
     try:
@@ -232,7 +269,7 @@ async def _restore_node_tunnels():
             tunnels = result.scalars().all()
             
             # Filter tunnels that need node-side restoration
-            node_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel"] and t.node_id]
+            node_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel", "frp"] and t.node_id]
             
             if not node_tunnels:
                 logger.info("No node-side tunnels to restore")

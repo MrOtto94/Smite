@@ -43,9 +43,21 @@ RUN set -eux; \
     gunzip "$CHISEL_TMP/chisel.gz"; \
     install -Dm755 "$CHISEL_TMP/chisel" /usr/local/bin/chisel; \
     rm -rf "$CHISEL_TMP"; \
+    echo "Fetching FRP release"; \
+    FRP_VERSION="v0.65.0"; \
+    FRP_URL="https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/frp_${FRP_VERSION}_linux_${ARCH}.tar.gz"; \
+    FRP_TMP="$(mktemp -d)"; \
+    curl -fsSL "$FRP_URL" -o "$FRP_TMP/frp.tar.gz"; \
+    tar -xzf "$FRP_TMP/frp.tar.gz" -C "$FRP_TMP"; \
+    FRPC_BIN="$(find "$FRP_TMP" -type f -name 'frpc' | head -n1)"; \
+    if [ -n "$FRPC_BIN" ]; then \
+        install -Dm755 "$FRPC_BIN" /usr/local/bin/frpc; \
+    fi; \
+    rm -rf "$FRP_TMP"; \
     /usr/local/bin/rathole --version || true; \
     /usr/local/bin/gost -V || true; \
-    /usr/local/bin/chisel --version || true
+    /usr/local/bin/chisel --version || true; \
+    /usr/local/bin/frpc --version || true
 
 # Stage 3: Install backhaul (cached layer)
 FROM base AS backhaul-bin
@@ -94,6 +106,7 @@ ENV SMITE_VERSION="${SMITE_VERSION}"
 # Copy binaries from binary stages
 COPY --from=rathole-bin /usr/local/bin/rathole /usr/local/bin/rathole
 COPY --from=rathole-bin /usr/local/bin/chisel /usr/local/bin/chisel
+COPY --from=rathole-bin /usr/local/bin/frpc /usr/local/bin/frpc
 COPY --from=backhaul-bin /opt/backhaul/backhaul /usr/local/bin/backhaul
 
 # Copy Python dependencies from deps stage
