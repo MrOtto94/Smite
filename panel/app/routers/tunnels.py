@@ -434,9 +434,19 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     logger.info(f"Chisel tunnel {db_tunnel.id}: server_url={server_url}, server_control_port={server_control_port}, reverse_port={reverse_port}, use_ipv6={use_ipv6}, panel_host={panel_host}")
             
             if needs_frp_server:
-                spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+                try:
+                    spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+                    logger.info(f"FRP spec prepared for tunnel {db_tunnel.id}: server_addr={spec_for_node.get('server_addr')}")
+                except Exception as e:
+                    error_msg = f"Failed to prepare FRP spec: {str(e)}"
+                    logger.error(f"Tunnel {db_tunnel.id}: {error_msg}", exc_info=True)
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = f"FRP configuration error: {error_msg}"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
             
-            logger.info(f"Applying tunnel {db_tunnel.id} to node {node.id}")
+            logger.info(f"Applying tunnel {db_tunnel.id} to node {node.id}, spec keys: {list(spec_for_node.keys())}, server_addr: {spec_for_node.get('server_addr', 'NOT SET')}")
             response = await client.send_to_node(
                 node_id=node.id,
                 endpoint="/api/agent/tunnels/apply",
@@ -770,31 +780,43 @@ async def update_tunnel(
                     try:
                         # Prepare spec for node (recalculate FRP server_addr if needed)
                         spec_for_node = tunnel.spec.copy() if tunnel.spec else {}
+                        frp_prep_failed = False
                         if tunnel.core == "frp":
-                            spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+                            try:
+                                spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+                                logger.info(f"FRP spec prepared for tunnel {tunnel.id}: server_addr={spec_for_node.get('server_addr')}")
+                            except Exception as e:
+                                error_msg = f"Failed to prepare FRP spec: {str(e)}"
+                                logger.error(f"Tunnel {tunnel.id}: {error_msg}", exc_info=True)
+                                tunnel.status = "error"
+                                tunnel.error_message = f"FRP configuration error: {error_msg}"
+                                await db.commit()
+                                await db.refresh(tunnel)
+                                frp_prep_failed = True
                         
-                        response = await client.send_to_node(
-                            node_id=node.id,
-                            endpoint="/api/agent/tunnels/apply",
-                            data={
-                                "tunnel_id": tunnel.id,
-                                "core": tunnel.core,
-                                "type": tunnel.type,
-                                "spec": spec_for_node
-                            }
-                        )
-                        
-                        if response.get("status") == "success":
-                            tunnel.status = "active"
-                            tunnel.error_message = None
-                        else:
-                            tunnel.status = "error"
-                            tunnel.error_message = f"Node error: {response.get('message', 'Unknown error')}"
-                            if needs_backhaul_server and hasattr(request.app.state, "backhaul_manager"):
-                                try:
-                                    request.app.state.backhaul_manager.stop_server(tunnel.id)
-                                except Exception:
-                                    pass
+                        if not frp_prep_failed:
+                            response = await client.send_to_node(
+                                node_id=node.id,
+                                endpoint="/api/agent/tunnels/apply",
+                                data={
+                                    "tunnel_id": tunnel.id,
+                                    "core": tunnel.core,
+                                    "type": tunnel.type,
+                                    "spec": spec_for_node
+                                }
+                            )
+                            
+                            if response.get("status") == "success":
+                                tunnel.status = "active"
+                                tunnel.error_message = None
+                            else:
+                                tunnel.status = "error"
+                                tunnel.error_message = f"Node error: {response.get('message', 'Unknown error')}"
+                                if needs_backhaul_server and hasattr(request.app.state, "backhaul_manager"):
+                                    try:
+                                        request.app.state.backhaul_manager.stop_server(tunnel.id)
+                                    except Exception:
+                                        pass
                     except Exception as e:
                         logger.error(f"Failed to re-apply tunnel to node: {e}")
                         tunnel.status = "error"
@@ -839,7 +861,13 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
         # Prepare spec for node (recalculate FRP server_addr if needed)
         spec_for_node = tunnel.spec.copy() if tunnel.spec else {}
         if tunnel.core == "frp":
-            spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+            try:
+                spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
+                logger.info(f"FRP spec prepared for tunnel {tunnel.id}: server_addr={spec_for_node.get('server_addr')}")
+            except Exception as e:
+                error_msg = f"Failed to prepare FRP spec: {str(e)}"
+                logger.error(f"Tunnel {tunnel.id}: {error_msg}", exc_info=True)
+                raise HTTPException(status_code=500, detail=error_msg)
         
         response = await client.send_to_node(
             node_id=node.id,
