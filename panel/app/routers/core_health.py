@@ -22,6 +22,7 @@ class CoreHealthResponse(BaseModel):
     core: str
     panel_status: str
     panel_healthy: bool
+    panel_error_message: str | None = None
     nodes_status: Dict[str, Dict[str, Any]]
 
 
@@ -68,13 +69,20 @@ async def get_core_health(request: Request, db: AsyncSession = Depends(get_db)):
             elif core == "rathole":
                 manager = getattr(request.app.state, "rathole_server_manager", None)
                 if manager:
-                    active_servers = manager.get_active_servers()
                     if len(active_tunnels) > 0:
-                        # Check if each tunnel has a corresponding active server
+                        # Check if each tunnel has a running server
                         tunnel_ids = {t.id for t in active_tunnels}
-                        server_tunnel_ids = set(active_servers)
-                        panel_healthy = tunnel_ids.issubset(server_tunnel_ids) and len(active_servers) > 0
+                        all_healthy = True
+                        error_message = None
+                        for tunnel_id in tunnel_ids:
+                            if not manager.is_running(tunnel_id):
+                                all_healthy = False
+                                error_message = f"Server for tunnel {tunnel_id[:8]}... not running"
+                                break
+                        panel_healthy = all_healthy
                         panel_status = "healthy" if panel_healthy else "error"
+                        if not panel_healthy and error_message:
+                            panel_status = f"error: {error_message}"
                     else:
                         panel_healthy = True  # No tunnels means healthy (nothing to check)
                         panel_status = "healthy"
@@ -124,29 +132,36 @@ async def get_core_health(request: Request, db: AsyncSession = Depends(get_db)):
             node_status = {
                 "healthy": False,
                 "status": "unknown",
-                "active_tunnels": 0
+                "error_message": None
             }
             
             try:
                 response = await client.get_tunnel_status(node_id, "")
                 if response and response.get("status") == "ok":
                     node_status["healthy"] = True
-                    node_status["status"] = "connected"
+                    node_status["status"] = "healthy"
                 else:
-                    node_status["status"] = "disconnected"
+                    error_msg = response.get("message", "Node disconnected") if response else "Node not responding"
+                    node_status["status"] = "error"
+                    node_status["error_message"] = error_msg
             except Exception as e:
                 logger.error(f"Error checking {core} node {node_id} health: {e}")
                 node_status["status"] = "error"
-            
-            node_tunnels = [t for t in active_tunnels if t.node_id == node_id]
-            node_status["active_tunnels"] = len(node_tunnels)
+                node_status["error_message"] = str(e)
             
             nodes_status[node_id] = node_status
+        
+        # Extract error message from panel_status if it contains error details
+        panel_error_message = None
+        if panel_status.startswith("error:"):
+            panel_error_message = panel_status.split("error:", 1)[1].strip()
+            panel_status = "error"
         
         health_data.append(CoreHealthResponse(
             core=core,
             panel_status=panel_status,
             panel_healthy=panel_healthy,
+            panel_error_message=panel_error_message,
             nodes_status=nodes_status
         ))
     
@@ -448,15 +463,23 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
                             logger.error(f"FRP tunnel {tunnel.id}: Cannot determine panel address for reset")
                             continue
                 
-                await client.apply_tunnel(
+                response = await client.apply_tunnel(
                     node_id,
                     {
                         "tunnel_id": tunnel.id,
                         "core": core,
+                        "type": tunnel.type,
                         "spec": spec_for_node
                     }
                 )
+                
+                if response.get("status") == "error":
+                    error_msg = response.get("message", "Unknown error")
+                    logger.error(f"Error restarting {core} client for tunnel {tunnel.id} on node {node_id}: {error_msg}")
+                    raise Exception(f"Failed to apply tunnel: {error_msg}")
+                
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"Error restarting {core} client for tunnel {tunnel.id} on node {node_id}: {e}")
+                raise
 

@@ -6,10 +6,11 @@ interface CoreHealth {
   core: string
   panel_status: string
   panel_healthy: boolean
+  panel_error_message?: string | null
   nodes_status: Record<string, {
     healthy: boolean
     status: string
-    active_tunnels: number
+    error_message?: string | null
   }>
 }
 
@@ -134,7 +135,7 @@ const CoreHealth = () => {
               key={coreHealth.core}
               className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6"
             >
-              <div className="flex items-center justify-between mb-4">
+              <div className="mb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
                     <Activity className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -148,12 +149,6 @@ const CoreHealth = () => {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {getStatusIcon(coreHealth.panel_healthy, coreHealth.panel_status)}
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {getStatusText(coreHealth.panel_healthy, coreHealth.panel_status)}
-                  </span>
-                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
@@ -161,11 +156,18 @@ const CoreHealth = () => {
                   <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
                     Panel Status
                   </h3>
-                  <div className="flex items-center gap-2">
-                    {getStatusIcon(coreHealth.panel_healthy, coreHealth.panel_status)}
-                    <span className="text-sm text-gray-600 dark:text-gray-400">
-                      {getStatusText(coreHealth.panel_healthy, coreHealth.panel_status)}
-                    </span>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      {getStatusIcon(coreHealth.panel_healthy, coreHealth.panel_status)}
+                      <span className="text-sm text-gray-600 dark:text-gray-400">
+                        {getStatusText(coreHealth.panel_healthy, coreHealth.panel_status)}
+                      </span>
+                    </div>
+                    {coreHealth.panel_error_message && (
+                      <p className="text-xs text-red-600 dark:text-red-400 ml-7">
+                        {coreHealth.panel_error_message}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -175,16 +177,23 @@ const CoreHealth = () => {
                   </h3>
                   <div className="space-y-2">
                     {Object.entries(coreHealth.nodes_status).map(([nodeId, nodeStatus]) => (
-                      <div key={nodeId} className="flex items-center justify-between text-sm">
-                        <span className="text-gray-600 dark:text-gray-400 truncate max-w-[200px]">
-                          {nodeId.substring(0, 8)}...
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(nodeStatus.healthy, nodeStatus.status)}
-                          <span className="text-gray-600 dark:text-gray-400">
-                            {getStatusText(nodeStatus.healthy, nodeStatus.status)}
+                      <div key={nodeId} className="space-y-1">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-600 dark:text-gray-400 truncate max-w-[200px]">
+                            {nodeId.substring(0, 8)}...
                           </span>
+                          <div className="flex items-center gap-2">
+                            {getStatusIcon(nodeStatus.healthy, nodeStatus.status)}
+                            <span className="text-gray-600 dark:text-gray-400">
+                              {nodeStatus.healthy ? "Healthy" : "Not Healthy"}
+                            </span>
+                          </div>
                         </div>
+                        {nodeStatus.error_message && (
+                          <p className="text-xs text-red-600 dark:text-red-400 ml-2">
+                            {nodeStatus.error_message}
+                          </p>
+                        )}
                       </div>
                     ))}
                     {nodeCount === 0 && (
