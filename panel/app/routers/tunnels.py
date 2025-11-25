@@ -27,6 +27,8 @@ def prepare_frp_spec_for_node(spec: dict, node: Node, request: Request) -> dict:
     panel_address = node.node_metadata.get("panel_address", "")
     panel_host = None
     
+    logger.debug(f"FRP tunnel: node metadata panel_address={panel_address}, node_metadata keys={list(node.node_metadata.keys())}")
+    
     if panel_address:
         # Parse panel_address (can be "host:port" or "http://host:port" or "https://host:port")
         if "://" in panel_address:
@@ -35,37 +37,53 @@ def prepare_frp_spec_for_node(spec: dict, node: Node, request: Request) -> dict:
             panel_host = panel_address.split(":")[0]
         else:
             panel_host = panel_address
+        logger.debug(f"FRP tunnel: parsed panel_host from panel_address: {panel_host}")
     
     # Fallback to spec panel_host if metadata doesn't have it
     if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
         panel_host = spec_for_node.get("panel_host")
-        if panel_host and "://" in panel_host:
-            panel_host = panel_host.split("://", 1)[1]
-        if panel_host and ":" in panel_host:
-            panel_host = panel_host.split(":")[0]
+        if panel_host:
+            if "://" in panel_host:
+                panel_host = panel_host.split("://", 1)[1]
+            if ":" in panel_host:
+                panel_host = panel_host.split(":")[0]
+            logger.debug(f"FRP tunnel: using panel_host from spec: {panel_host}")
     
     # Try X-Forwarded-Host header
     if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
         forwarded_host = request.headers.get("X-Forwarded-Host")
         if forwarded_host:
             panel_host = forwarded_host.split(":")[0] if ":" in forwarded_host else forwarded_host
+            logger.debug(f"FRP tunnel: using panel_host from X-Forwarded-Host: {panel_host}")
     
-    # Try request hostname (but reject 0.0.0.0)
+    # Try request hostname (but reject 0.0.0.0, None, and empty)
     if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
-        request_host = request.url.hostname
-        if request_host and request_host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+        request_host = request.url.hostname if request.url else None
+        if request_host and request_host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0", ""]:
             panel_host = request_host
+            logger.debug(f"FRP tunnel: using panel_host from request.url.hostname: {panel_host}")
     
     # Try environment variable as last resort
     if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
         import os
         panel_public_ip = os.getenv("PANEL_PUBLIC_IP") or os.getenv("PANEL_IP")
-        if panel_public_ip and panel_public_ip not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+        if panel_public_ip and panel_public_ip not in ["localhost", "127.0.0.1", "::1", "0.0.0.0", ""]:
             panel_host = panel_public_ip
+            logger.debug(f"FRP tunnel: using panel_host from environment: {panel_host}")
     
-    # If still no valid host, raise error
-    if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
-        error_msg = f"Cannot determine panel address for FRP tunnel. Node's panel_address in metadata is: {panel_address}. Please ensure node has correct PANEL_ADDRESS configured or set PANEL_PUBLIC_IP environment variable on panel."
+    # If still no valid host, raise error with detailed information
+    if not panel_host or panel_host in ["localhost", "127.0.0.1", "::1", "0.0.0.0", ""]:
+        error_details = {
+            "node_id": node.id,
+            "node_name": node.name,
+            "node_metadata_panel_address": panel_address,
+            "node_metadata_keys": list(node.node_metadata.keys()),
+            "request_hostname": request.url.hostname if request.url else None,
+            "x_forwarded_host": request.headers.get("X-Forwarded-Host"),
+            "env_panel_public_ip": os.getenv("PANEL_PUBLIC_IP"),
+            "env_panel_ip": os.getenv("PANEL_IP"),
+        }
+        error_msg = f"Cannot determine panel address for FRP tunnel. Details: {error_details}. Please ensure node has correct PANEL_ADDRESS configured (node should register with panel_address in metadata) or set PANEL_PUBLIC_IP environment variable on panel."
         logger.error(error_msg)
         raise ValueError(error_msg)
     
