@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import Nodes from './pages/Nodes'
 import Tunnels from './pages/Tunnels'
 import Logs from './pages/Logs'
+import CoreHealth from './pages/CoreHealth'
 
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -92,6 +93,16 @@ const AppRoutes = () => {
           <ProtectedRoute>
             <Layout>
               <Logs />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/core-health"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <CoreHealth />
             </Layout>
           </ProtectedRoute>
         }

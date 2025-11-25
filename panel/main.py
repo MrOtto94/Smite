@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
-from app.models import Tunnel, Node
+from app.models import Tunnel, Node, CoreResetConfig
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import init_db
-from app.routers import nodes, tunnels, panel, status, logs, auth
+from app.routers import nodes, tunnels, panel, status, logs, auth, core_health
 from app.hysteria2_server import Hysteria2Server
 from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
@@ -74,7 +74,19 @@ async def lifespan(app: FastAPI):
     # Restore node-side tunnels after panel-side is restored
     await _restore_node_tunnels()
     
+    # Start auto-reset scheduler
+    reset_task = asyncio.create_task(_auto_reset_scheduler(app))
+    app.state.reset_task = reset_task
+    
     yield
+    
+    # Cancel reset task
+    if hasattr(app.state, 'reset_task'):
+        app.state.reset_task.cancel()
+        try:
+            await app.state.reset_task
+        except asyncio.CancelledError:
+            pass
     
     if hasattr(app.state, 'h2_server'):
         await app.state.h2_server.stop()
@@ -365,6 +377,45 @@ async def _restore_node_tunnels():
         logger.error(f"Error restoring node tunnels: {e}", exc_info=True)
 
 
+async def _auto_reset_scheduler(app: FastAPI):
+    """Background task to auto-reset cores based on timer configuration"""
+    from datetime import datetime, timedelta
+    from app.routers.core_health import _reset_core
+    
+    while True:
+        try:
+            await asyncio.sleep(60)
+            
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(CoreResetConfig).where(CoreResetConfig.enabled == True))
+                configs = result.scalars().all()
+                
+                now = datetime.utcnow()
+                
+                for config in configs:
+                    if not config.next_reset:
+                        continue
+                    
+                    if now >= config.next_reset:
+                        try:
+                            logger.info(f"Auto-resetting {config.core} core (interval: {config.interval_minutes} minutes)")
+                            await _reset_core(config.core, app, db)
+                            
+                            config.last_reset = now
+                            config.next_reset = now + timedelta(minutes=config.interval_minutes)
+                            await db.commit()
+                            
+                            logger.info(f"Auto-reset completed for {config.core}, next reset at {config.next_reset}")
+                        except Exception as e:
+                            logger.error(f"Error in auto-reset for {config.core}: {e}", exc_info=True)
+                            await db.rollback()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in auto-reset scheduler: {e}", exc_info=True)
+            await asyncio.sleep(60)
+
+
 app = FastAPI(
     title="Smite Panel",
     description="Tunneling Control Panel",
@@ -388,6 +439,7 @@ app.include_router(nodes.router, prefix="/api/nodes", tags=["nodes"])
 app.include_router(tunnels.router, prefix="/api/tunnels", tags=["tunnels"])
 app.include_router(status.router, prefix="/api/status", tags=["status"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
+app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"])
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 static_path = Path(static_dir)

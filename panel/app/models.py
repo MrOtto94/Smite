@@ -59,3 +59,16 @@ class Usage(Base):
     bytes_used = Column(Integer, default=0)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
+
+class CoreResetConfig(Base):
+    __tablename__ = "core_reset_config"
+    
+    id = Column(String, primary_key=True, default=generate_uuid)
+    core = Column(String, nullable=False, unique=True)
+    enabled = Column(Boolean, default=False)
+    interval_minutes = Column(Integer, default=10)
+    last_reset = Column(DateTime, nullable=True)
+    next_reset = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
