@@ -27,10 +27,6 @@ const CoreHealth = () => {
   const [configs, setConfigs] = useState<ResetConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState<string | null>(null)
-  // Standalone counter: seconds since last reset for each core
-  const [resetCounters, setResetCounters] = useState<Record<string, number>>({})
-  // Track last_reset value from server to detect changes (not timestamp, just the value)
-  const [lastResetValues, setLastResetValues] = useState<Record<string, string | null>>({})
 
   const fetchData = async () => {
     try {
@@ -39,37 +35,7 @@ const CoreHealth = () => {
         api.get('/core-health/reset-config')
       ])
       setHealth(healthRes.data)
-      
-      // Update configs
       setConfigs(configsRes.data)
-      
-      // Detect reset changes by comparing last_reset value (not timestamp)
-      setLastResetValues(prevValues => {
-        const updated: Record<string, string | null> = {}
-        
-        configsRes.data.forEach((config: ResetConfig) => {
-          const currentValue = config.last_reset
-          const previousValue = prevValues[config.core]
-          
-          // If last_reset value changed, reset the counter to 0
-          if (currentValue !== previousValue) {
-            setResetCounters(prevCounters => ({
-              ...prevCounters,
-              [config.core]: 0
-            }))
-          } else if (previousValue === undefined && currentValue) {
-            // First time loading: initialize counter to 0 if there's a last_reset
-            setResetCounters(prevCounters => ({
-              ...prevCounters,
-              [config.core]: 0
-            }))
-          }
-          
-          updated[config.core] = currentValue
-        })
-        
-        return updated
-      })
     } catch (error) {
       console.error('Failed to fetch core health:', error)
     } finally {
@@ -83,34 +49,14 @@ const CoreHealth = () => {
     return () => clearInterval(interval)
   }, [])
 
-  // Increment reset counters every second (standalone timer)
-  useEffect(() => {
-    const timerInterval = setInterval(() => {
-      setResetCounters(prevCounters => {
-        const updated: Record<string, number> = {}
-        Object.keys(prevCounters).forEach(core => {
-          updated[core] = (prevCounters[core] || 0) + 1
-        })
-        return updated
-      })
-    }, 1000)
-    return () => clearInterval(timerInterval)
-  }, [])
-
 
   const handleReset = async (core: string) => {
     if (!confirm(`Are you sure you want to reset ${core} core?`)) return
     
     setUpdating(core)
-    
-    // Reset counter to 0 immediately (standalone timer)
-    setResetCounters(prev => ({
-      ...prev,
-      [core]: 0
-    }))
-    
     try {
       await api.post(`/core-health/reset/${core}`)
+      await fetchData()
     } catch (error) {
       console.error(`Failed to reset ${core}:`, error)
       alert(`Failed to reset ${core}`)
@@ -156,27 +102,6 @@ const CoreHealth = () => {
     }
   }
 
-  const formatTimeAgo = (core: string, counter: number | undefined) => {
-    // Standalone counter: just format the seconds count
-    if (counter === undefined || counter === null) {
-      return "Never"
-    }
-    
-    if (counter < 10) return "Just now"
-    if (counter < 60) return `${counter} seconds ago`
-    
-    const minutes = Math.floor(counter / 60)
-    if (minutes === 1) return "1 minute ago"
-    if (minutes < 60) return `${minutes} minutes ago`
-    
-    const hours = Math.floor(minutes / 60)
-    if (hours === 1) return "1 hour ago"
-    if (hours < 24) return `${hours} hours ago`
-    
-    const days = Math.floor(hours / 24)
-    if (days === 1) return "1 day ago"
-    return `${days} days ago`
-  }
 
   if (loading) {
     return (
@@ -314,11 +239,6 @@ const CoreHealth = () => {
                         disabled={updating === coreHealth.core}
                         className="w-20 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      <div key={`${coreHealth.core}-${resetCounters[coreHealth.core] || 0}`}>
-                        Last reset: {formatTimeAgo(coreHealth.core, resetCounters[coreHealth.core])}
-                      </div>
                     </div>
                   </div>
                 )}

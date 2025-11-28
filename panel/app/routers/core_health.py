@@ -223,10 +223,19 @@ async def update_reset_config(
         config.interval_minutes = config_update.interval_minutes
     
     if config.enabled and config.interval_minutes:
+        now = datetime.utcnow()
         if config.last_reset:
-            config.next_reset = config.last_reset + timedelta(minutes=config.interval_minutes)
+            # Calculate next_reset from last_reset, but ensure it's not in the past
+            calculated_next = config.last_reset + timedelta(minutes=config.interval_minutes)
+            if calculated_next > now:
+                # If calculated time is in the future, use it
+                config.next_reset = calculated_next
+            else:
+                # If calculated time is in the past (e.g., old last_reset), reset from now
+                config.next_reset = now + timedelta(minutes=config.interval_minutes)
         else:
-            config.next_reset = datetime.utcnow() + timedelta(minutes=config.interval_minutes)
+            # No last_reset, start timer from now
+            config.next_reset = now + timedelta(minutes=config.interval_minutes)
     else:
         config.next_reset = None
     
