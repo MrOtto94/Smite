@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     panel_port: int = 8000
     panel_host: str = "0.0.0.0"
     panel_domain: str = ""
+    panel_address: str = ""  # Optional full address host:port or URL for node helpers
     https_enabled: bool = False
     https_cert_path: str = "./certs/server.crt"
     https_key_path: str = "./certs/server.key"
@@ -35,4 +36,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

@@ -129,7 +129,8 @@ async def _restore_forwards():
             
             for tunnel in tunnels:
                 logger.info(f"Checking tunnel {tunnel.id}: type={tunnel.type}, core={tunnel.core}")
-                needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and tunnel.core == "xray"
+                # Only restore panel-side gost if tunnel is not node-managed
+                needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and tunnel.core == "xray" and not tunnel.node_id
                 if not needs_gost_forwarding:
                     continue
                 
@@ -300,7 +301,7 @@ async def _restore_node_tunnels():
             tunnels = result.scalars().all()
             
             # Filter tunnels that need node-side restoration
-            node_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel", "frp"] and t.node_id]
+            node_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel", "frp", "xray"] and t.node_id]
             
             if not node_tunnels:
                 logger.info("No node-side tunnels to restore")
@@ -555,3 +556,12 @@ if __name__ == "__main__":
             )
     else:
         uvicorn.run(app, host=settings.panel_host, port=settings.panel_port)
+                    elif tunnel.core == "xray":
+                        # Ensure forward_to is set; fallback to remote_ip/remote_port
+                        remote_ip = spec_for_node.get("remote_ip") or spec_for_node.get("remote_addr")
+                        remote_port = spec_for_node.get("remote_port") or spec_for_node.get("listen_port")
+                        if remote_ip and remote_port:
+                            spec_for_node["forward_to"] = spec_for_node.get("forward_to") or f"{remote_ip}:{remote_port}"
+                        else:
+                            logger.warning(f"GOST tunnel {tunnel.id}: missing remote_ip/remote_port, skipping restore")
+                            continue

@@ -200,9 +200,51 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
             if not node:
                 raise HTTPException(status_code=404, detail="Node not found")
     
+    # For GOST (core xray), enforce Iran + foreign selection and hydrate remote_ip
+    if tunnel.core == "xray":
+        if not tunnel.node_id and not tunnel.iran_node_id:
+            raise HTTPException(status_code=400, detail="GOST tunnels require an Iran node")
+        if not tunnel.foreign_node_id:
+            raise HTTPException(status_code=400, detail="GOST tunnels require a foreign server")
+        
+        # Resolve iran node from provided id
+        iran_id = tunnel.iran_node_id or tunnel.node_id
+        result = await db.execute(select(Node).where(Node.id == iran_id))
+        iran_node = result.scalar_one_or_none()
+        if not iran_node:
+            raise HTTPException(status_code=404, detail="Iran node not found")
+        if iran_node.node_metadata.get("role") not in ["iran", None]:
+            raise HTTPException(status_code=400, detail="Selected Iran node is not marked as iran role")
+        
+        # Resolve foreign node to populate remote_ip if missing
+        result = await db.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
+        foreign_node = result.scalar_one_or_none()
+        if not foreign_node:
+            raise HTTPException(status_code=404, detail="Foreign node not found")
+        if foreign_node.node_metadata.get("role") != "foreign":
+            raise HTTPException(status_code=400, detail="Selected foreign server is not marked as foreign role")
+        
+        # Populate remote_ip from foreign node metadata if not provided
+        if tunnel.spec is None:
+            tunnel.spec = {}
+        if not tunnel.spec.get("remote_ip"):
+            foreign_ip = foreign_node.node_metadata.get("ip_address")
+            if not foreign_ip:
+                raise HTTPException(status_code=400, detail="Foreign server has no ip_address in metadata")
+            tunnel.spec["remote_ip"] = foreign_ip
+        if not tunnel.spec.get("remote_port"):
+            tunnel.spec["remote_port"] = tunnel.spec.get("listen_port") or tunnel.spec.get("port") or 8080
+        tunnel.spec["forward_to"] = tunnel.spec.get("forward_to") or f"{tunnel.spec.get('remote_ip')}:{tunnel.spec.get('remote_port')}"
+        node = iran_node
+        # Ensure node_id is set to iran node
+        tunnel.node_id = iran_node.id
+        tunnel.iran_node_id = iran_node.id
+    
     # Persist the iran node ID for reverse tunnels so we know which side is primary
     if is_reverse_tunnel and iran_node:
         db_node_id = iran_node.id
+    elif tunnel.core == "xray" and (tunnel.iran_node_id or tunnel.node_id):
+        db_node_id = tunnel.iran_node_id or tunnel.node_id
     else:
         db_node_id = tunnel.node_id or ""
     
@@ -219,13 +261,13 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     await db.refresh(db_tunnel)
     
     try:
-        needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "xray"
+        needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "xray" and not db_tunnel.node_id
         # For reverse tunnels, servers run on foreign nodes, not on panel
         needs_rathole_server = False  # Server runs on foreign node now
         needs_backhaul_server = False  # Server runs on foreign node now
         needs_chisel_server = False  # Server runs on foreign node now
         needs_frp_server = False  # Server runs on foreign node now
-        needs_node_apply = db_tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
+        needs_node_apply = db_tunnel.core in {"rathole", "backhaul", "chisel", "frp", "xray"}
         
         logger.info(
             "Tunnel %s: gost=%s, rathole=%s, backhaul=%s, chisel=%s, frp=%s",
@@ -698,6 +740,19 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     await db.refresh(db_tunnel)
                     return db_tunnel
             
+            # For GOST, ensure forward_to is set
+            if db_tunnel.core == "xray":
+                remote_ip = spec_for_node.get("remote_ip") or spec_for_node.get("remote_addr")
+                remote_port = spec_for_node.get("remote_port") or spec_for_node.get("listen_port")
+                if remote_ip and remote_port:
+                    spec_for_node["forward_to"] = spec_for_node.get("forward_to") or f"{remote_ip}:{remote_port}"
+                else:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Missing remote_ip/remote_port for GOST"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+            
             logger.info(f"Applying tunnel {db_tunnel.id} to node {node.id}, spec keys: {list(spec_for_node.keys())}, server_addr: {spec_for_node.get('server_addr', 'NOT SET')}, full spec: {spec_for_node}")
             response = await client.send_to_node(
                 node_id=node.id,
@@ -894,12 +949,12 @@ async def update_tunnel(
     
     if spec_changed:
         try:
-            needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and tunnel.core == "xray"
+            needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and tunnel.core == "xray" and not tunnel.node_id
             needs_rathole_server = tunnel.core == "rathole"
             needs_backhaul_server = tunnel.core == "backhaul"
             needs_chisel_server = tunnel.core == "chisel"
             needs_frp_server = tunnel.core == "frp"
-            needs_node_apply = tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
+            needs_node_apply = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "xray"}
             
             if needs_gost_forwarding:
                 listen_port = tunnel.spec.get("listen_port")
@@ -1114,6 +1169,14 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
         spec_for_node = tunnel.spec.copy() if tunnel.spec else {}
         logger.info(f"Applying tunnel {tunnel.id} (core={tunnel.core}): original spec={spec_for_node}")
         
+        if tunnel.core == "xray":
+            remote_ip = spec_for_node.get("remote_ip") or spec_for_node.get("remote_addr")
+            remote_port = spec_for_node.get("remote_port") or spec_for_node.get("listen_port")
+            if remote_ip and remote_port:
+                spec_for_node["forward_to"] = spec_for_node.get("forward_to") or f"{remote_ip}:{remote_port}"
+            else:
+                raise HTTPException(status_code=400, detail="GOST tunnel missing remote_ip/remote_port")
+        
         if tunnel.core == "frp":
             try:
                 spec_for_node = prepare_frp_spec_for_node(spec_for_node, node, request)
@@ -1220,4 +1283,3 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
     await db.delete(tunnel)
     await db.commit()
     return {"status": "deleted"}
-
