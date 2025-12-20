@@ -54,11 +54,16 @@ RUN set -eux; \
     if [ -n "$FRPC_BIN" ]; then \
         install -Dm755 "$FRPC_BIN" /usr/local/bin/frpc; \
     fi; \
+    FRPS_BIN="$(find "$FRP_TMP" -type f -name 'frps' | head -n1)"; \
+    if [ -n "$FRPS_BIN" ]; then \
+        install -Dm755 "$FRPS_BIN" /usr/local/bin/frps; \
+    fi; \
     rm -rf "$FRP_TMP"; \
     /usr/local/bin/rathole --version || true; \
     /usr/local/bin/gost -V || true; \
     /usr/local/bin/chisel --version || true; \
-    /usr/local/bin/frpc --version || true
+    /usr/local/bin/frpc --version || true; \
+    /usr/local/bin/frps --version || true
 
 # Stage 3: Install backhaul (cached layer)
 FROM base AS backhaul-bin
@@ -108,6 +113,7 @@ ENV SMITE_VERSION="${SMITE_VERSION}"
 COPY --from=rathole-bin /usr/local/bin/rathole /usr/local/bin/rathole
 COPY --from=rathole-bin /usr/local/bin/chisel /usr/local/bin/chisel
 COPY --from=rathole-bin /usr/local/bin/frpc /usr/local/bin/frpc
+COPY --from=rathole-bin /usr/local/bin/frps /usr/local/bin/frps
 COPY --from=backhaul-bin /opt/backhaul/backhaul /usr/local/bin/backhaul
 
 # Copy Python dependencies from deps stage

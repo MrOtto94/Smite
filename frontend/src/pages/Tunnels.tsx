@@ -954,6 +954,19 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
   const [backhaulAdvanced, setBackhaulAdvanced] = useState<BackhaulAdvancedState>(createDefaultBackhaulAdvancedState())
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
 
+  // Auto-populate remote_ip with foreign server IP when GOST is selected
+  useEffect(() => {
+    if (formData.core === 'xray' && formData.foreign_node_id) {
+      const selectedServer = servers.find(s => s.id === formData.foreign_node_id)
+      if (selectedServer?.metadata?.ip_address) {
+        setFormData(prev => ({
+          ...prev,
+          remote_ip: selectedServer.metadata.ip_address
+        }))
+      }
+    }
+  }, [formData.foreign_node_id, formData.core, servers])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
@@ -1111,7 +1124,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Iran Node (Client)
+                Iran Node
               </label>
               <select
                 value={formData.iran_node_id || formData.node_id}
@@ -1129,7 +1142,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Foreign Server (Server)
+                Foreign Server
               </label>
               <select
                 value={formData.foreign_node_id}

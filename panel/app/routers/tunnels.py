@@ -842,6 +842,14 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     from app.utils import format_address_port
                     remote_ip = db_tunnel.spec.get("remote_ip", "127.0.0.1")
                     remote_port = db_tunnel.spec.get("remote_port", 8080)
+                    # If foreign_node_id is provided in the request, use foreign server IP instead
+                    foreign_node_id_val = tunnel.foreign_node_id if tunnel.foreign_node_id and (not isinstance(tunnel.foreign_node_id, str) or tunnel.foreign_node_id.strip()) else None
+                    if foreign_node_id_val:
+                        result = await db.execute(select(Node).where(Node.id == foreign_node_id_val))
+                        foreign_node = result.scalar_one_or_none()
+                        if foreign_node and foreign_node.node_metadata.get("ip_address"):
+                            remote_ip = foreign_node.node_metadata.get("ip_address")
+                            logger.info(f"GOST tunnel {db_tunnel.id}: Using foreign server IP {remote_ip} for forwarding")
                     forward_to = format_address_port(remote_ip, remote_port)
                 
                 panel_port = listen_port or db_tunnel.spec.get("remote_port")
