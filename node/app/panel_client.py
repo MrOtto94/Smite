@@ -94,21 +94,46 @@ class PanelClient:
         
         try:
             url = f"{panel_api_url}/api/nodes"
-            logger.info(f"[HTTP] Registering with panel at {url}...")
+            is_initial = not self.registered
+            if is_initial:
+                logger.info(f"[HTTP] Registering with panel at {url}...")
+            else:
+                logger.debug(f"[HTTP] Re-registering with panel at {url}...")
             response = await self.client.post(url, json=registration_data, timeout=10.0)
             
             if response.status_code in [200, 201]:
                 data = response.json()
                 self.node_id = data.get("id")
+                was_registered = self.registered
                 self.registered = True
-                logger.info(f"[HTTP] Node registered successfully with ID: {self.node_id}")
+                if was_registered:
+                    logger.debug(f"[HTTP] Node re-registered successfully with ID: {self.node_id}")
+                else:
+                    logger.info(f"[HTTP] Node registered successfully with ID: {self.node_id}")
                 
                 metadata = data.get("metadata", {})
                 frp_config = metadata.get("frp_config")
                 if frp_config and frp_config.get("enabled"):
-                    logger.info(f"[FRP] FRP communication enabled by panel, setting up FRP client...")
-                    await self._setup_frp(frp_config)
+                    # Check if FRP is already running with the same config
+                    if frp_comm_client.is_running():
+                        current_config = frp_comm_client.get_config()
+                        if (current_config.get("server_addr") == frp_config.get("server_addr") and
+                            current_config.get("server_port") == frp_config.get("server_port") and
+                            current_config.get("token") == frp_config.get("token")):
+                            logger.debug("[FRP] FRP client already running with correct config, skipping setup")
+                        else:
+                            logger.info(f"[FRP] FRP config changed, restarting FRP client...")
+                            frp_comm_client.stop()
+                            await self._setup_frp(frp_config)
+                    else:
+                        logger.info(f"[FRP] FRP communication enabled by panel, setting up FRP client...")
+                        await self._setup_frp(frp_config)
                 else:
+                    # FRP is disabled, stop it if running
+                    if frp_comm_client.is_running():
+                        logger.info(f"[FRP] FRP communication disabled, stopping FRP client...")
+                        frp_comm_client.stop()
+                        self.using_frp = False
                     logger.info(f"[HTTP] FRP communication not enabled, continuing with HTTP")
                 
                 return True

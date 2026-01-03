@@ -20,10 +20,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def registration_loop(panel_client: PanelClient):
+    """Periodic registration loop to pick up FRP config changes"""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Re-register every 60 seconds
+            if panel_client and panel_client.client:
+                await panel_client.register_with_panel()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Periodic registration error (will retry): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     h2_client = PanelClient()
+    registration_task = None
     try:
         await h2_client.start()
         app.state.h2_client = h2_client
@@ -33,6 +47,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Could not register with panel: {e}")
             logger.warning("Node will continue running but manual registration may be needed")
+        
+        # Start periodic registration loop
+        registration_task = asyncio.create_task(registration_loop(h2_client))
+        app.state.registration_task = registration_task
     except Exception as e:
         logger.error(f"Failed to start Panel client: {e}")
         logger.error("Node API will still be available, but panel connection will not work")
@@ -48,6 +66,12 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to restore tunnels on startup: {e}", exc_info=True)
     
     yield
+    if hasattr(app.state, 'registration_task') and app.state.registration_task:
+        app.state.registration_task.cancel()
+        try:
+            await app.state.registration_task
+        except asyncio.CancelledError:
+            pass
     if hasattr(app.state, 'h2_client') and app.state.h2_client:
         try:
             await app.state.h2_client.stop()
