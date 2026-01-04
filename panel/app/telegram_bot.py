@@ -517,7 +517,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                     break
             
             if env_file:
-                shutil.copy2(env_file, backup_dir / ".env")
+                # Use 'env' instead of '.env' to make it visible (not hidden)
+                shutil.copy2(env_file, backup_dir / "env")
                 logger.info(f"Backed up .env from: {env_file}")
             
             # Find and backup docker-compose.yml
