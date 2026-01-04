@@ -167,6 +167,9 @@ const Nodes = () => {
                 Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                IP Address
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                 Last Seen
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
@@ -234,15 +237,18 @@ const Nodes = () => {
                           return status
                       }
                     }
-                    return (
-                      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(connStatus)}`}>
-                        {getStatusIcon(connStatus)}
-                        {getStatusText(connStatus)}
-                      </span>
-                    )
-                  })()}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                      return (
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(connStatus)}`}>
+                          {getStatusIcon(connStatus)}
+                          {getStatusText(connStatus)}
+                        </span>
+                      )
+                    })()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                    {node.metadata?.ip_address || 'N/A'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                   {new Date(node.last_seen).toLocaleString()}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
