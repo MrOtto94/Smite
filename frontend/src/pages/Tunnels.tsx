@@ -2021,6 +2021,7 @@ function buildBackhaulSpec(
   }
   
   const publicPorts = parsePortsFromString(base.public_port)
+  console.log('buildBackhaulSpec: base.public_port:', base.public_port, '-> parsed publicPorts:', publicPorts, 'count:', publicPorts.length)
   const effectivePublicPort = publicPorts.length > 0 ? publicPorts[0] : (!Number.isNaN(publicPort) && publicPort > 0 ? publicPort : effectiveControlPort)
   const effectiveTargetPort = publicPorts.length > 0 ? publicPorts[0] : (!Number.isNaN(targetPort) && targetPort > 0 ? targetPort : effectivePublicPort)
 
@@ -2030,22 +2031,35 @@ function buildBackhaulSpec(
 
   // Use customPorts if provided, otherwise build from comma-separated public_port
   let ports: string[] = []
-  if (advanced.customPorts && advanced.customPorts.trim()) {
+  
+  // CRITICAL: Check if customPorts is set AND has content
+  // If customPorts is empty or just whitespace, use publicPorts instead
+  const hasCustomPorts = advanced.customPorts && advanced.customPorts.trim().length > 0
+  
+  if (hasCustomPorts) {
+    // User manually entered ports in CUSTOM PORTS field
     ports = advanced.customPorts
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
+    console.log('buildBackhaulSpec: Using customPorts, count:', ports.length, 'ports:', ports)
   } else if (publicPorts.length > 0) {
-    // Build ports array from comma-separated public_port
+    // Build ports array from comma-separated public_port (e.g., "8080,8081,8082")
+    // This is the automatic conversion from Ports field to Backhaul format
     ports = publicPorts.map(p => {
       const listenedPort = listenIp !== '0.0.0.0' ? `${listenIp}:${p}` : `${p}`
       return `${listenedPort}=${targetHost}:${p}`
     })
+    console.log('buildBackhaulSpec: Built ports from publicPorts:', publicPorts, '-> ports:', ports, 'count:', ports.length)
   }
   
   if (ports.length === 0) {
     ports.push(defaultPortEntry)
+    console.log('buildBackhaulSpec: No ports found, using default:', defaultPortEntry)
   }
+  
+  // Final verification - ensure we have ports
+  console.log('buildBackhaulSpec: Final ports array:', ports, 'count:', ports.length)
 
   const serverOptions: Record<string, any> = {}
   Object.entries(advanced.server).forEach(([key, value]) => {
