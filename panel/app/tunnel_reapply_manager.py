@@ -89,18 +89,34 @@ class TunnelReapplyManager:
     async def _reapply_all_tunnels(self):
         """Reapply all tunnels"""
         from app.routers.tunnels import prepare_frp_spec_for_node
+        from app.models import Node
+        from fastapi import Request
+        from starlette.requests import Request as StarletteRequest
         
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(Tunnel))
+            result = await session.execute(select(Tunnel).where(Tunnel.status == "active"))
             tunnels = result.scalars().all()
             
             if not tunnels:
-                logger.debug("No tunnels to reapply")
+                logger.debug("No active tunnels to reapply")
                 return
             
             client = NodeClient()
             applied = 0
             failed = 0
+            
+            from starlette.requests import Request as StarletteRequest
+            from starlette.datastructures import Headers
+            
+            fake_request = StarletteRequest(
+                scope={
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/tunnels/reapply",
+                    "headers": Headers({}).raw,
+                    "query_string": b"",
+                }
+            )
             
             for tunnel in tunnels:
                 try:
@@ -108,21 +124,214 @@ class TunnelReapplyManager:
                     
                     if is_reverse_tunnel:
                         iran_node_id = tunnel.iran_node_id or tunnel.node_id
-                        if iran_node_id:
-                            result = await session.execute(select(Tunnel).where(Tunnel.id == tunnel.id))
-                            await session.refresh(tunnel)
+                        if not iran_node_id:
+                            continue
                             
-                            # Simplified reapply - just update status
-                            # Full reapply would require request object which we don't have here
-                            # For now, we'll just mark as needing reapply
-                            logger.info(f"Auto reapply: Tunnel {tunnel.name} ({tunnel.core}) - would reapply")
-                            applied += 1
+                        result = await session.execute(select(Node).where(Node.id == iran_node_id))
+                        iran_node = result.scalar_one_or_none()
+                        if not iran_node:
+                            continue
+                        
+                        result = await session.execute(select(Node))
+                        all_nodes = result.scalars().all()
+                        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+                        if not foreign_nodes:
+                            continue
+                        foreign_node = foreign_nodes[0]
+                        
+                        spec = tunnel.spec.copy() if tunnel.spec else {}
+                        
+                        if tunnel.core == "frp":
+                            spec_for_iran = prepare_frp_spec_for_node(spec, iran_node, fake_request)
+                            spec_for_foreign = prepare_frp_spec_for_node(spec, foreign_node, fake_request)
+                            
+                            server_response = await client.send_to_node(
+                                node_id=iran_node.id,
+                                endpoint="/api/agent/tunnels/apply",
+                                data={
+                                    "tunnel_id": tunnel.id,
+                                    "core": tunnel.core,
+                                    "type": tunnel.type,
+                                    "spec": spec_for_iran
+                                }
+                            )
+                            
+                            if server_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to iran node: {server_response.get('message')}")
+                                failed += 1
+                                continue
+                            
+                            client_response = await client.send_to_node(
+                                node_id=foreign_node.id,
+                                endpoint="/api/agent/tunnels/apply",
+                                data={
+                                    "tunnel_id": tunnel.id,
+                                    "core": tunnel.core,
+                                    "type": tunnel.type,
+                                    "spec": spec_for_foreign
+                                }
+                            )
+                            
+                            if client_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to foreign node: {client_response.get('message')}")
+                                failed += 1
+                                continue
+                            
+                            if server_response.get("status") == "success" and client_response.get("status") == "success":
+                                applied += 1
+                                logger.info(f"Successfully reapplied tunnel {tunnel.id} ({tunnel.core})")
+                            else:
+                                failed += 1
+                        else:
+                            server_spec = spec.copy()
+                            server_spec["mode"] = "server"
+                            client_spec = spec.copy()
+                            client_spec["mode"] = "client"
+                            
+                            if tunnel.core == "rathole":
+                                transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
+                                proxy_port = server_spec.get("remote_port") or server_spec.get("listen_port")
+                                token = server_spec.get("token")
+                                if not proxy_port or not token:
+                                    continue
+                                
+                                from app.utils import parse_address_port
+                                remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
+                                _, control_port, _ = parse_address_port(remote_addr)
+                                if not control_port:
+                                    import hashlib
+                                    port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                                    control_port = 23333 + (port_hash % 1000)
+                                server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                                server_spec["proxy_port"] = proxy_port
+                                server_spec["transport"] = transport
+                                
+                                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                                if not iran_node_ip:
+                                    continue
+                                transport_lower = transport.lower()
+                                if transport_lower in ("websocket", "ws"):
+                                    use_tls = bool(server_spec.get("websocket_tls") or server_spec.get("tls"))
+                                    protocol = "wss://" if use_tls else "ws://"
+                                    client_spec["remote_addr"] = f"{protocol}{iran_node_ip}:{control_port}"
+                                else:
+                                    client_spec["remote_addr"] = f"{iran_node_ip}:{control_port}"
+                                client_spec["transport"] = transport
+                                client_spec["token"] = token
+                            
+                            elif tunnel.core == "backhaul":
+                                transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
+                                control_port = server_spec.get("control_port") or server_spec.get("public_port") or server_spec.get("listen_port") or 3080
+                                public_port = server_spec.get("public_port") or server_spec.get("listen_port") or control_port
+                                target_host = server_spec.get("target_host", "127.0.0.1")
+                                token = server_spec.get("token")
+                                
+                                server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                                server_spec["control_port"] = control_port
+                                server_spec["public_port"] = public_port
+                                server_spec["listen_port"] = public_port
+                                ports = server_spec.get("ports", [])
+                                if ports:
+                                    server_spec["ports"] = ports
+                                if token:
+                                    server_spec["token"] = token
+                                
+                                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                                if not iran_node_ip:
+                                    continue
+                                transport_lower = transport.lower()
+                                if transport_lower in ("ws", "wsmux"):
+                                    use_tls = bool(server_spec.get("tls_cert") or server_spec.get("server_options", {}).get("tls_cert"))
+                                    protocol = "wss://" if use_tls else "ws://"
+                                    client_spec["remote_addr"] = f"{protocol}{iran_node_ip}:{control_port}"
+                                else:
+                                    client_spec["remote_addr"] = f"{iran_node_ip}:{control_port}"
+                                client_spec["transport"] = transport
+                                if token:
+                                    client_spec["token"] = token
+                            
+                            elif tunnel.core == "chisel":
+                                listen_port = server_spec.get("listen_port") or server_spec.get("remote_port")
+                                if not listen_port:
+                                    continue
+                                
+                                import hashlib
+                                port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                                server_control_port = server_spec.get("control_port") or (int(listen_port) + 10000 + (port_hash % 1000))
+                                server_spec["server_port"] = server_control_port
+                                server_spec["reverse_port"] = listen_port
+                                
+                                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                                if not iran_node_ip:
+                                    continue
+                                client_spec["server_url"] = f"http://{iran_node_ip}:{server_control_port}"
+                                client_spec["reverse_port"] = listen_port
+                            
+                            server_response = await client.send_to_node(
+                                node_id=iran_node.id,
+                                endpoint="/api/agent/tunnels/apply",
+                                data={
+                                    "tunnel_id": tunnel.id,
+                                    "core": tunnel.core,
+                                    "type": tunnel.type,
+                                    "spec": server_spec
+                                }
+                            )
+                            
+                            if server_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to iran node: {server_response.get('message')}")
+                                failed += 1
+                                continue
+                            
+                            client_response = await client.send_to_node(
+                                node_id=foreign_node.id,
+                                endpoint="/api/agent/tunnels/apply",
+                                data={
+                                    "tunnel_id": tunnel.id,
+                                    "core": tunnel.core,
+                                    "type": tunnel.type,
+                                    "spec": client_spec
+                                }
+                            )
+                            
+                            if client_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to foreign node: {client_response.get('message')}")
+                                failed += 1
+                                continue
+                            
+                            if server_response.get("status") == "success" and client_response.get("status") == "success":
+                                applied += 1
+                                logger.info(f"Successfully reapplied tunnel {tunnel.id} ({tunnel.core})")
+                            else:
+                                failed += 1
                     else:
-                        # Single node tunnel
-                        result = await session.execute(select(Tunnel).where(Tunnel.id == tunnel.id))
-                        await session.refresh(tunnel)
-                        logger.info(f"Auto reapply: Tunnel {tunnel.name} ({tunnel.core}) - would reapply")
-                        applied += 1
+                        result = await session.execute(select(Node).where(Node.id == tunnel.node_id))
+                        node = result.scalar_one_or_none()
+                        if not node:
+                            continue
+                        
+                        spec = tunnel.spec.copy() if tunnel.spec else {}
+                        
+                        if tunnel.core == "frp":
+                            spec = prepare_frp_spec_for_node(spec, node, fake_request)
+                        
+                        response = await client.send_to_node(
+                            node_id=node.id,
+                            endpoint="/api/agent/tunnels/apply",
+                            data={
+                                "tunnel_id": tunnel.id,
+                                "core": tunnel.core,
+                                "type": tunnel.type,
+                                "spec": spec
+                            }
+                        )
+                        
+                        if response.get("status") == "success":
+                            applied += 1
+                            logger.info(f"Successfully reapplied tunnel {tunnel.id} ({tunnel.core})")
+                        else:
+                            failed += 1
+                            logger.error(f"Failed to reapply tunnel {tunnel.id}: {response.get('message')}")
                 except Exception as e:
                     logger.error(f"Error reapplying tunnel {tunnel.id}: {e}", exc_info=True)
                     failed += 1

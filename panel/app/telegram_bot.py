@@ -444,38 +444,35 @@ Use buttons in messages to interact with nodes and tunnels."""
                         panel_root = possible_root
                         break
             
-            # Backup database
             db_path = panel_root / "data" / "smite.db"
             if db_path.exists():
                 shutil.copy2(db_path, backup_dir / "smite.db")
             
-            # Backup .env file - check multiple locations
             env_paths = [
+                Path("/opt/smite") / ".env",
+                Path("/opt") / ".env",
                 panel_root / ".env",
                 panel_root.parent / ".env",
-                Path("/opt/smite") / ".env",
                 Path(os.getcwd()) / ".env",
+                Path(os.getcwd()).parent / ".env",
             ]
-            env_found = False
             for env_path in env_paths:
-                if env_path.exists():
+                if env_path.exists() and env_path.is_file():
                     shutil.copy2(env_path, backup_dir / ".env")
-                    env_found = True
                     logger.info(f"Backed up .env from: {env_path}")
                     break
             
-            # Backup docker-compose.yml - check multiple locations
             docker_compose_paths = [
+                Path("/opt/smite") / "docker-compose.yml",
+                Path("/opt") / "docker-compose.yml",
                 panel_root / "docker-compose.yml",
                 panel_root.parent / "docker-compose.yml",
-                Path("/opt/smite") / "docker-compose.yml",
                 Path(os.getcwd()) / "docker-compose.yml",
+                Path(os.getcwd()).parent / "docker-compose.yml",
             ]
-            docker_compose_found = False
             for docker_compose in docker_compose_paths:
-                if docker_compose.exists():
+                if docker_compose.exists() and docker_compose.is_file():
                     shutil.copy2(docker_compose, backup_dir / "docker-compose.yml")
-                    docker_compose_found = True
                     logger.info(f"Backed up docker-compose.yml from: {docker_compose}")
                     break
             

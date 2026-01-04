@@ -159,13 +159,14 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
 @router.get("", response_model=List[NodeResponse])
 async def list_nodes(db: AsyncSession = Depends(get_db)):
     """List all nodes with connection state"""
+    import asyncio
     result = await db.execute(select(Node))
     nodes = result.scalars().all()
     
     client = NodeClient()
     node_responses = []
     
-    for node in nodes:
+    async def check_node_status(node):
         connection_status = "failed"
         try:
             response = await client.get_tunnel_status(node.id, "")
@@ -187,7 +188,7 @@ async def list_nodes(db: AsyncSession = Depends(get_db)):
         metadata = node.node_metadata.copy() if node.node_metadata else {}
         metadata["connection_status"] = connection_status
         
-        node_responses.append(NodeResponse(
+        return NodeResponse(
             id=node.id,
             name=node.name,
             fingerprint=node.fingerprint,
@@ -195,9 +196,30 @@ async def list_nodes(db: AsyncSession = Depends(get_db)):
             registered_at=node.registered_at,
             last_seen=node.last_seen,
             metadata=metadata
-        ))
+        )
     
-    return node_responses
+    tasks = [check_node_status(node) for node in nodes]
+    node_responses = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    results = []
+    for i, response in enumerate(node_responses):
+        if isinstance(response, Exception):
+            node = nodes[i]
+            metadata = node.node_metadata.copy() if node.node_metadata else {}
+            metadata["connection_status"] = "failed"
+            results.append(NodeResponse(
+                id=node.id,
+                name=node.name,
+                fingerprint=node.fingerprint,
+                status=node.status,
+                registered_at=node.registered_at,
+                last_seen=node.last_seen,
+                metadata=metadata
+            ))
+        else:
+            results.append(response)
+    
+    return results
 
 
 @router.get("/{node_id}", response_model=NodeResponse)

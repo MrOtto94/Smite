@@ -64,7 +64,7 @@ async def get_core_health(request: Request, db: AsyncSession = Depends(get_db)):
         
         client = NodeClient()
         
-        for node_id, node in iran_nodes_all.items():
+        async def check_iran_node(node_id, node):
             connection_status = {
                 "status": "failed",
                 "error_message": None
@@ -92,16 +92,14 @@ async def get_core_health(request: Request, db: AsyncSession = Depends(get_db)):
                 connection_status["status"] = "failed"
                 connection_status["error_message"] = str(e)
             
-            node_info = {
+            return {
                 "id": node_id,
                 "name": node.name,
                 "role": "iran",
                 **connection_status
             }
-            
-            iran_nodes[node_id] = node_info
         
-        for node_id, node in foreign_nodes_all.items():
+        async def check_foreign_node(node_id, node):
             connection_status = {
                 "status": "failed",
                 "error_message": None
@@ -125,18 +123,32 @@ async def get_core_health(request: Request, db: AsyncSession = Depends(get_db)):
                 connection_status["status"] = "reconnecting"
                 connection_status["error_message"] = "Connection timeout"
             except Exception as e:
-                logger.error(f"Error checking {core} server {node_id} health: {e}")
+                logger.error(f"Error checking {core} node {node_id} health: {e}")
                 connection_status["status"] = "failed"
                 connection_status["error_message"] = str(e)
             
-            node_info = {
+            return {
                 "id": node_id,
                 "name": node.name,
                 "role": "foreign",
                 **connection_status
             }
-            
-            foreign_nodes[node_id] = node_info
+        
+        iran_tasks = [check_iran_node(node_id, node) for node_id, node in iran_nodes_all.items()]
+        foreign_tasks = [check_foreign_node(node_id, node) for node_id, node in foreign_nodes_all.items()]
+        
+        iran_results = await asyncio.gather(*iran_tasks, return_exceptions=True)
+        foreign_results = await asyncio.gather(*foreign_tasks, return_exceptions=True)
+        
+        for result in iran_results:
+            if isinstance(result, Exception):
+                continue
+            iran_nodes[result["id"]] = result
+        
+        for result in foreign_results:
+            if isinstance(result, Exception):
+                continue
+            foreign_nodes[result["id"]] = result
         
         health_data.append(CoreHealthResponse(
             core=core,

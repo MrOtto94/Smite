@@ -438,30 +438,22 @@ async def _restore_node_tunnels():
                         client_spec["local_addr"] = local_addr
                     
                     elif tunnel.core == "frp":
-                        import hashlib
-                        port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
-                        bind_port = server_spec.get("bind_port") or (7000 + (port_hash % 1000))
-                        token = server_spec.get("token")
-                        server_spec["bind_port"] = bind_port
-                        if token:
-                            server_spec["token"] = token
+                        from app.routers.tunnels import prepare_frp_spec_for_node
+                        from starlette.requests import Request as StarletteRequest
+                        from starlette.datastructures import Headers
                         
-                        iran_node_ip = iran_node.node_metadata.get("ip_address")
-                        if not iran_node_ip:
-                            logger.warning(f"Tunnel {tunnel.id}: Iran node has no IP address, skipping")
-                            continue
-                        client_spec["server_addr"] = iran_node_ip
-                        client_spec["server_port"] = bind_port
-                        if token:
-                            client_spec["token"] = token
-                        tunnel_type = tunnel.type.lower() if tunnel.type else "tcp"
-                        if tunnel_type not in ["tcp", "udp"]:
-                            tunnel_type = "tcp"  # Default to tcp if invalid
-                        client_spec["type"] = tunnel_type
-                        local_ip = client_spec.get("local_ip") or iran_node_ip
-                        local_port = client_spec.get("local_port") or bind_port
-                        client_spec["local_ip"] = local_ip
-                        client_spec["local_port"] = local_port
+                        fake_request = StarletteRequest(
+                            scope={
+                                "type": "http",
+                                "method": "POST",
+                                "path": "/api/tunnels/restore",
+                                "headers": Headers({}).raw,
+                                "query_string": b"",
+                            }
+                        )
+                        
+                        server_spec = prepare_frp_spec_for_node(server_spec, iran_node, fake_request)
+                        client_spec = prepare_frp_spec_for_node(client_spec, foreign_node, fake_request)
                     
                     elif tunnel.core == "backhaul":
                         transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
@@ -524,6 +516,7 @@ async def _restore_node_tunnels():
                     if server_response.get("status") == "error":
                         error_msg = server_response.get("message", "Unknown error from iran node")
                         logger.error(f"Failed to restore tunnel {tunnel.id} on iran node {iran_node.id}: {error_msg}")
+                        failed_count += 1
                         continue
                     
                     if not foreign_node.node_metadata.get("api_address"):

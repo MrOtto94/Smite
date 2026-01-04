@@ -137,7 +137,8 @@ class NodeClient:
             logger.debug(f"[{comm_type}] Getting tunnel status from node {node_id}")
             
             try:
-                async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
+                timeout = httpx.Timeout(3.0, connect=2.0)
+                async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
                     response = await client.get(url)
                     response.raise_for_status()
                     return response.json()
