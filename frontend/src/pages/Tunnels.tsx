@@ -1119,19 +1119,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
         iran_node_id: formData.iran_node_id || formData.node_id || null,
         spec: spec,
       }
-      const response = await api.post('/tunnels', payload)
-      
-      if (response.data?.spec) {
-        const generatedToken = response.data.spec.token || response.data.spec.auth
-        if (generatedToken) {
-          const tokenType = formData.core === 'chisel' ? 'Auth' : 'Token'
-          const userProvidedToken = formData.rathole_token || formData.frp_token || (formData.core === 'backhaul' && backhaulState.token)
-          if (!userProvidedToken) {
-            alert(`${tokenType} generated: ${generatedToken}\n\nPlease save this ${tokenType.toLowerCase()} for future reference.`)
-          }
-        }
-      }
-      
+      await api.post('/tunnels', payload)
       onSuccess()
     } catch (error) {
       console.error('Failed to create tunnel:', error)

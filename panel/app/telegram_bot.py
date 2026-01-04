@@ -364,17 +364,51 @@ class TelegramBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         try:
-            if not self.is_admin(update.effective_user.id):
-                await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+            user_id = update.effective_user.id
+            reply_markup = self._get_keyboard(user_id)
+            
+            if not self.is_admin(user_id):
+                await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
                 return
             
             await self.show_main_menu(update.message)
         except Exception as e:
             logger.error(f"Error in cmd_start: {e}", exc_info=True)
             try:
-                await update.message.reply_text("❌ Error: Please try again.")
+                user_id = update.effective_user.id
+                reply_markup = self._get_keyboard(user_id)
+                await update.message.reply_text("❌ Error: Please try again.", reply_markup=reply_markup)
             except:
                 pass
+    
+    def _get_keyboard(self, user_id: int) -> ReplyKeyboardMarkup:
+        """Get persistent keyboard markup"""
+        keyboard = [
+            [
+                KeyboardButton(f"📊 {self.t(user_id, 'node_stats')}"),
+                KeyboardButton(f"📊 {self.t(user_id, 'tunnel_stats')}")
+            ],
+            [
+                KeyboardButton(f"➕ {self.t(user_id, 'add_iran_node')}"),
+                KeyboardButton(f"➕ {self.t(user_id, 'add_foreign_node')}")
+            ],
+            [
+                KeyboardButton(f"➖ {self.t(user_id, 'remove_iran_node')}"),
+                KeyboardButton(f"➖ {self.t(user_id, 'remove_foreign_node')}")
+            ],
+            [
+                KeyboardButton(f"🔗 {self.t(user_id, 'create_tunnel')}"),
+                KeyboardButton(f"🗑️ {self.t(user_id, 'remove_tunnel')}")
+            ],
+            [
+                KeyboardButton(f"📋 {self.t(user_id, 'logs')}"),
+                KeyboardButton(f"📦 {self.t(user_id, 'backup')}")
+            ],
+            [
+                KeyboardButton(f"🌐 {self.t(user_id, 'language')}")
+            ],
+        ]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True, one_time_keyboard=False)
     
     async def show_main_menu(self, message_or_query):
         """Show main menu with persistent keyboard buttons"""
@@ -390,35 +424,9 @@ class TelegramBot:
                 user_id = message_or_query.chat.id if hasattr(message_or_query, 'chat') else 0
                 message = message_or_query
             
-            # Create persistent keyboard (ReplyKeyboardMarkup) - like the example image
-            keyboard = [
-                [
-                    KeyboardButton(f"📊 {self.t(user_id, 'node_stats')}"),
-                    KeyboardButton(f"📊 {self.t(user_id, 'tunnel_stats')}")
-                ],
-                [
-                    KeyboardButton(f"➕ {self.t(user_id, 'add_iran_node')}"),
-                    KeyboardButton(f"➕ {self.t(user_id, 'add_foreign_node')}")
-                ],
-                [
-                    KeyboardButton(f"➖ {self.t(user_id, 'remove_iran_node')}"),
-                    KeyboardButton(f"➖ {self.t(user_id, 'remove_foreign_node')}")
-                ],
-                [
-                    KeyboardButton(f"🔗 {self.t(user_id, 'create_tunnel')}"),
-                    KeyboardButton(f"🗑️ {self.t(user_id, 'remove_tunnel')}")
-                ],
-                [
-                    KeyboardButton(f"📋 {self.t(user_id, 'logs')}"),
-                    KeyboardButton(f"📦 {self.t(user_id, 'backup')}")
-                ],
-                [
-                    KeyboardButton(f"🌐 {self.t(user_id, 'language')}")
-                ],
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
-            
+            reply_markup = self._get_keyboard(user_id)
             text = self.t(user_id, "welcome")
+            
             if hasattr(message, 'reply_text'):
                 await message.reply_text(text, reply_markup=reply_markup)
             elif hasattr(message_or_query, 'edit_message_text'):
@@ -429,15 +437,19 @@ class TelegramBot:
             logger.error(f"Error showing main menu: {e}", exc_info=True)
             try:
                 user_id = message_or_query.from_user.id if hasattr(message_or_query, 'from_user') else 0
+                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
-                    await message_or_query.reply_text(self.t(user_id, "welcome"))
+                    await message_or_query.reply_text(self.t(user_id, "welcome"), reply_markup=reply_markup)
             except:
                 pass
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
         help_text = """📋 Available Commands:
@@ -451,7 +463,7 @@ class TelegramBot:
 
 Use buttons in messages to interact with nodes and tunnels."""
         
-        await update.message.reply_text(help_text)
+        await update.message.reply_text(help_text, reply_markup=reply_markup)
     
     async def add_node_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start adding a node"""
@@ -527,7 +539,8 @@ Use buttons in messages to interact with nodes and tunnels."""
         try:
             port = int(update.message.text) if update.message.text.strip() else 8888
         except ValueError:
-            await update.message.reply_text("Invalid port. Using default 8888.")
+            reply_markup = self._get_keyboard(user_id)
+            await update.message.reply_text("Invalid port. Using default 8888.", reply_markup=reply_markup)
             port = 8888
         
         state = self.user_states[user_id]
@@ -543,13 +556,15 @@ Use buttons in messages to interact with nodes and tunnels."""
                         "metadata": {"role": state["role"]}
                     }
                 )
+                reply_markup = self._get_keyboard(user_id)
                 if response.status_code == 200:
-                    await update.message.reply_text(self.t(user_id, "node_added"))
+                    await update.message.reply_text(self.t(user_id, "node_added"), reply_markup=reply_markup)
                 else:
-                    await update.message.reply_text(self.t(user_id, "error", error=response.text))
+                    await update.message.reply_text(self.t(user_id, "error", error=response.text), reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error adding node: {e}", exc_info=True)
-            await update.message.reply_text(self.t(user_id, "error", error=str(e)))
+            reply_markup = self._get_keyboard(user_id)
+            await update.message.reply_text(self.t(user_id, "error", error=str(e)), reply_markup=reply_markup)
         
         del self.user_states[user_id]
         return ConversationHandler.END
@@ -727,7 +742,8 @@ Use buttons in messages to interact with nodes and tunnels."""
         ports = [int(p.strip()) for p in ports_str.split(",") if p.strip().isdigit()]
         
         if not ports:
-            await update.message.reply_text("Invalid ports. Please enter comma-separated numbers.")
+            reply_markup = self._get_keyboard(user_id)
+            await update.message.reply_text("Invalid ports. Please enter comma-separated numbers.", reply_markup=reply_markup)
             return WAITING_FOR_TUNNEL_PORTS
         
         self.user_states[user_id]["ports"] = ports
@@ -1019,35 +1035,47 @@ Use buttons in messages to interact with nodes and tunnels."""
     
     async def cmd_nodes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /nodes command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
         await self.cmd_nodes_callback(update.message)
     
     async def cmd_tunnels(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tunnels command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
         await self.cmd_tunnels_callback(update.message)
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
         await self.cmd_status_callback(update.message)
     
     async def cmd_backup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /backup command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
-        await update.message.reply_text("📦 Creating backup...")
+        await update.message.reply_text("📦 Creating backup...", reply_markup=reply_markup)
         
         try:
             backup_path = await self.create_backup()
@@ -1056,19 +1084,23 @@ Use buttons in messages to interact with nodes and tunnels."""
                     await update.message.reply_document(
                         document=f,
                         filename=f"smite_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        caption="✅ Backup created successfully"
+                        caption="✅ Backup created successfully",
+                        reply_markup=reply_markup
                     )
                 os.remove(backup_path)
             else:
-                await update.message.reply_text("❌ Failed to create backup")
+                await update.message.reply_text("❌ Failed to create backup", reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating backup: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Error creating backup: {str(e)}")
+            await update.message.reply_text(f"❌ Error creating backup: {str(e)}", reply_markup=reply_markup)
     
     async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /logs command"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text(self.t(update.effective_user.id, "access_denied"))
+        user_id = update.effective_user.id
+        reply_markup = self._get_keyboard(user_id)
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
             return
         
         try:
@@ -1080,14 +1112,14 @@ Use buttons in messages to interact with nodes and tunnels."""
                         text = "📋 Recent Logs:\n\n"
                         for log in logs[-10:]:
                             text += f"`{log.get('level', 'INFO')}` {log.get('message', '')[:100]}\n\n"
-                        await update.message.reply_text(text, parse_mode="Markdown")
+                        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
                     else:
-                        await update.message.reply_text("No logs available.")
+                        await update.message.reply_text("No logs available.", reply_markup=reply_markup)
                 else:
-                    await update.message.reply_text("Failed to fetch logs.")
+                    await update.message.reply_text("Failed to fetch logs.", reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error fetching logs: {e}", exc_info=True)
-            await update.message.reply_text(f"Error: {str(e)}")
+            await update.message.reply_text(f"Error: {str(e)}", reply_markup=reply_markup)
     
     async def create_backup(self) -> Optional[str]:
         """Create backup archive"""
@@ -1236,7 +1268,9 @@ Use buttons in messages to interact with nodes and tunnels."""
         except Exception as e:
             logger.error(f"Error handling text message: {e}", exc_info=True)
             try:
-                await update.message.reply_text("❌ Error processing request")
+                user_id = update.effective_user.id
+                reply_markup = self._get_keyboard(user_id)
+                await update.message.reply_text("❌ Error processing request", reply_markup=reply_markup)
             except:
                 pass
     
@@ -1306,13 +1340,14 @@ Use buttons in messages to interact with nodes and tunnels."""
                 result = await session.execute(select(Node))
                 nodes = result.scalars().all()
                 
+                reply_markup = self._get_keyboard(user_id)
+                
                 if not nodes:
                     text = self.t(user_id, "no_nodes")
                     if hasattr(message, 'edit_message_text'):
-                        await message.edit_message_text(text)
+                        await message.edit_message_text(text, reply_markup=reply_markup)
                     elif hasattr(message, 'reply_text'):
-                        await message.reply_text(text)
-                    await self.show_main_menu(message)
+                        await message.reply_text(text, reply_markup=reply_markup)
                     return
                 
                 text = f"📊 {self.t(user_id, 'node_stats')}:\n\n"
@@ -1327,10 +1362,9 @@ Use buttons in messages to interact with nodes and tunnels."""
                     text += f"   ID: {node.id[:8]}...\n\n"
                 
                 if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(text)
+                    await message.edit_message_text(text, reply_markup=reply_markup)
                 elif hasattr(message, 'reply_text'):
-                    await message.reply_text(text)
-                await self.show_main_menu(message)
+                    await message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error in cmd_nodes_callback: {e}", exc_info=True)
             try:
@@ -1355,17 +1389,16 @@ Use buttons in messages to interact with nodes and tunnels."""
                 result = await session.execute(select(Tunnel))
                 tunnels = result.scalars().all()
                 
+                reply_markup = self._get_keyboard(user_id)
+                
                 if not tunnels:
                     text = self.t(user_id, "no_tunnels")
                     if hasattr(message_or_query, 'edit_message_text'):
-                        await message_or_query.edit_message_text(text)
-                        await self.show_main_menu(message_or_query.message)
+                        await message_or_query.edit_message_text(text, reply_markup=reply_markup)
                     elif hasattr(message_or_query, 'reply_text'):
-                        await message_or_query.reply_text(text)
-                        await self.show_main_menu(message_or_query)
+                        await message_or_query.reply_text(text, reply_markup=reply_markup)
                     else:
-                        await message_or_query.message.reply_text(text)
-                        await self.show_main_menu(message_or_query.message)
+                        await message_or_query.message.reply_text(text, reply_markup=reply_markup)
                     return
                 
                 text = f"📊 {self.t(user_id, 'tunnel_stats')}:\n\n"
@@ -1381,21 +1414,24 @@ Use buttons in messages to interact with nodes and tunnels."""
                 if len(tunnels) > 10:
                     text += f"\n... and {len(tunnels) - 10} more"
                 
+                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text(text)
-                    await self.show_main_menu(message_or_query.message)
+                    await message_or_query.edit_message_text(text, reply_markup=reply_markup)
                 elif hasattr(message_or_query, 'reply_text'):
-                    await message_or_query.reply_text(text)
-                    await self.show_main_menu(message_or_query)
+                    await message_or_query.reply_text(text, reply_markup=reply_markup)
                 else:
-                    await message_or_query.message.reply_text(text)
-                    await self.show_main_menu(message_or_query.message)
+                    await message_or_query.message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error in cmd_tunnels_callback: {e}", exc_info=True)
             try:
+                user_id = message_or_query.from_user.id if hasattr(message_or_query, 'from_user') else 0
+                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
-                    await message_or_query.reply_text("❌ Error loading tunnels")
-                await self.show_main_menu(message_or_query.message if hasattr(message_or_query, 'message') else message_or_query)
+                    await message_or_query.reply_text("❌ Error loading tunnels", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'edit_message_text'):
+                    await message_or_query.edit_message_text("❌ Error loading tunnels", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'message'):
+                    await message_or_query.message.reply_text("❌ Error loading tunnels", reply_markup=reply_markup)
             except:
                 pass
     
@@ -1425,27 +1461,32 @@ Use buttons in messages to interact with nodes and tunnels."""
 🔗 Tunnels: {active_tunnels}/{len(tunnels)} active
 """
                 
+                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text(text)
-                    await self.show_main_menu(message_or_query.message)
+                    await message_or_query.edit_message_text(text, reply_markup=reply_markup)
                 elif hasattr(message_or_query, 'reply_text'):
-                    await message_or_query.reply_text(text)
-                    await self.show_main_menu(message_or_query)
+                    await message_or_query.reply_text(text, reply_markup=reply_markup)
                 else:
-                    await message_or_query.message.reply_text(text)
-                    await self.show_main_menu(message_or_query.message)
+                    await message_or_query.message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error in cmd_status_callback: {e}", exc_info=True)
             try:
+                user_id = message_or_query.from_user.id if hasattr(message_or_query, 'from_user') else 0
+                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
-                    await message_or_query.reply_text("❌ Error loading status")
-                await self.show_main_menu(message_or_query.message if hasattr(message_or_query, 'message') else message_or_query)
+                    await message_or_query.reply_text("❌ Error loading status", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'edit_message_text'):
+                    await message_or_query.edit_message_text("❌ Error loading status", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'message'):
+                    await message_or_query.message.reply_text("❌ Error loading status", reply_markup=reply_markup)
             except:
                 pass
     
     async def cmd_backup_callback(self, query):
         """Handle backup command from callback"""
-        await query.edit_message_text("📦 Creating backup...")
+        user_id = query.from_user.id
+        reply_markup = self._get_keyboard(user_id)
+        await query.edit_message_text("📦 Creating backup...", reply_markup=reply_markup)
         
         try:
             backup_path = await self.create_backup()
@@ -1454,15 +1495,16 @@ Use buttons in messages to interact with nodes and tunnels."""
                     await query.message.reply_document(
                         document=f,
                         filename=f"smite_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        caption="✅ Backup created successfully"
+                        caption="✅ Backup created successfully",
+                        reply_markup=reply_markup
                     )
                 os.remove(backup_path)
-                await query.edit_message_text("✅ Backup created and sent successfully!")
+                await query.edit_message_text("✅ Backup created and sent successfully!", reply_markup=reply_markup)
             else:
-                await query.edit_message_text("❌ Failed to create backup")
+                await query.edit_message_text("❌ Failed to create backup", reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating backup: {e}", exc_info=True)
-            await query.edit_message_text(f"❌ Error creating backup: {str(e)}")
+            await query.edit_message_text(f"❌ Error creating backup: {str(e)}", reply_markup=reply_markup)
     
     async def cmd_logs_callback(self, query):
         """Handle logs command from callback"""

@@ -19,29 +19,24 @@ env:
   IMAGE_PREFIX: ${{ github.repository_owner }}/smite
 
 jobs:
-  build-and-push:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write
-
+    outputs:
+      should_publish: ${{ steps.publish.outputs.result }}
+      version: ${{ steps.version.outputs.version }}
+      has_version: ${{ steps.has-version.outputs.has_version }}
+      should_tag_latest: ${{ steps.tag-latest.outputs.should_tag }}
+      image_prefix: ${{ steps.image-prefix.outputs.prefix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set lowercase image prefix
         id: image-prefix
@@ -111,25 +106,48 @@ jobs:
             echo "should_tag=false" >> "$GITHUB_OUTPUT"
           fi
 
+  build-panel:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    if: needs.prepare.outputs.should_publish == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract metadata for panel image
         id: meta-panel
         uses: docker/metadata-action@v5
-        if: steps.publish.outputs.result == 'true'
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image-prefix.outputs.prefix }}-panel
+          images: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_prefix }}-panel
           tags: |
             type=raw,value=tst,enable=${{ github.ref == 'refs/heads/tst' }}
             type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/tst' }}
             type=ref,event=pr
-            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' && steps.has-version.outputs.has_version == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' && steps.has-version.outputs.has_version == 'true' }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.has-version.outputs.has_version == 'true' && steps.version.outputs.version != 'latest' && github.ref != 'refs/heads/tst' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
+            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' && needs.prepare.outputs.has_version == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' && needs.prepare.outputs.has_version == 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.has_version == 'true' && needs.prepare.outputs.version != 'latest' && github.ref != 'refs/heads/tst' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
             type=sha,enable=${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/tst' }}
-            type=raw,value=latest,enable=${{ steps.tag-latest.outputs.should_tag == 'true' && github.ref != 'refs/heads/tst' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.should_tag_latest == 'true' && github.ref != 'refs/heads/tst' }}
 
       - name: Build and push panel image
         uses: docker/build-push-action@v5
-        if: steps.publish.outputs.result == 'true'
         with:
           context: .
           file: ./panel/Dockerfile
@@ -137,29 +155,52 @@ jobs:
           tags: ${{ steps.meta-panel.outputs.tags }}
           labels: ${{ steps.meta-panel.outputs.labels }}
           build-args: |
-            SMITE_VERSION=${{ steps.version.outputs.version }}
+            SMITE_VERSION=${{ needs.prepare.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  build-node:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    if: needs.prepare.outputs.should_publish == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata for node image
         id: meta-node
         uses: docker/metadata-action@v5
-        if: steps.publish.outputs.result == 'true'
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image-prefix.outputs.prefix }}-node
+          images: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_prefix }}-node
           tags: |
             type=raw,value=tst,enable=${{ github.ref == 'refs/heads/tst' }}
             type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/tst' }}
             type=ref,event=pr
-            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' && steps.has-version.outputs.has_version == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' && steps.has-version.outputs.has_version == 'true' }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.has-version.outputs.has_version == 'true' && steps.version.outputs.version != 'latest' && github.ref != 'refs/heads/tst' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
+            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' && needs.prepare.outputs.has_version == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' && needs.prepare.outputs.has_version == 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.has_version == 'true' && needs.prepare.outputs.version != 'latest' && github.ref != 'refs/heads/tst' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
             type=sha,enable=${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/tst' }}
-            type=raw,value=latest,enable=${{ steps.tag-latest.outputs.should_tag == 'true' && github.ref != 'refs/heads/tst' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.should_tag_latest == 'true' && github.ref != 'refs/heads/tst' }}
 
       - name: Build and push node image
         uses: docker/build-push-action@v5
-        if: steps.publish.outputs.result == 'true'
         with:
           context: ./node
           file: ./node/Dockerfile
@@ -167,8 +208,6 @@ jobs:
           tags: ${{ steps.meta-node.outputs.tags }}
           labels: ${{ steps.meta-node.outputs.labels }}
           build-args: |
-            SMITE_VERSION=${{ steps.version.outputs.version }}
+            SMITE_VERSION=${{ needs.prepare.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-
