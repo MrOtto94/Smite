@@ -40,10 +40,9 @@ except ImportError:
 
 
 # Conversation states
-(WAITING_FOR_NODE_NAME, WAITING_FOR_NODE_IP, WAITING_FOR_NODE_PORT, WAITING_FOR_NODE_ROLE,
- WAITING_FOR_TUNNEL_NAME, WAITING_FOR_TUNNEL_CORE, WAITING_FOR_TUNNEL_TYPE, WAITING_FOR_TUNNEL_PORTS,
+(WAITING_FOR_TUNNEL_NAME, WAITING_FOR_TUNNEL_CORE, WAITING_FOR_TUNNEL_TYPE, WAITING_FOR_TUNNEL_PORTS,
  WAITING_FOR_TUNNEL_IRAN_NODE, WAITING_FOR_TUNNEL_FOREIGN_NODE, WAITING_FOR_TUNNEL_REMOTE_IP,
- WAITING_FOR_TUNNEL_TOKEN) = range(12)
+ WAITING_FOR_TUNNEL_TOKEN) = range(8)
 
 
 class TelegramBot:
@@ -59,9 +58,13 @@ class TelegramBot:
         self.backup_interval = 60
         self.backup_interval_unit = "minutes"
         self.user_languages: Dict[str, str] = {}
-        self.user_states: Dict[int, Dict] = {}
+        self.user_states: Dict[int, Dict[str, Any]] = {}
         self.language_file = Path("/tmp/telegram_bot_languages.json")
         self._load_languages()
+        api_url = os.getenv("PANEL_API_URL")
+        if not api_url:
+            api_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        self.api_base_url = api_url
     
     async def load_settings(self):
         """Load settings from database"""
@@ -248,7 +251,7 @@ class TelegramBot:
             self.application.add_handler(CommandHandler("logs", self.cmd_logs))
             self.application.add_handler(create_tunnel_conv)
             self.application.add_handler(remove_tunnel_conv)
-            self.application.add_handler(CallbackQueryHandler(self.handle_callback))
+            self.application.add_handler(CallbackQueryHandler(self.handle_callback, pattern="^(lang_|select_language|back_to_menu|node_stats|tunnel_stats|logs|cmd_nodes|cmd_tunnels|cmd_backup|cmd_status)$"))
             
             # Handle persistent keyboard buttons - must be after conversation handlers
             self.application.add_handler(MessageHandler(
@@ -256,19 +259,24 @@ class TelegramBot:
                 self.handle_text_message
             ))
             
-            await self.application.initialize()
-            await self.application.start()
-            
-            await self.application.updater.start_polling(drop_pending_updates=True)
-            
             await self.start_backup_task()
             
             logger.info("Telegram bot started successfully")
+            
+            asyncio.create_task(self._run_polling())
+            
             return True
         except Exception as e:
             logger.error(f"Failed to start Telegram bot: {e}", exc_info=True)
             await self.stop()
             return False
+    
+    async def _run_polling(self):
+        """Run polling in background task"""
+        try:
+            await self.application.run_polling(drop_pending_updates=True, stop_signals=None)
+        except Exception as e:
+            logger.error(f"Error in polling: {e}", exc_info=True)
     
     async def stop(self):
         """Stop Telegram bot"""
@@ -276,8 +284,6 @@ class TelegramBot:
         
         if self.application:
             try:
-                if self.application.updater and self.application.updater.running:
-                    await self.application.updater.stop()
                 await self.application.stop()
                 await self.application.shutdown()
             except Exception as e:
@@ -449,214 +455,6 @@ Use buttons in messages to interact with nodes and tunnels."""
         
         await update.message.reply_text(help_text, reply_markup=reply_markup)
     
-    async def add_node_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start adding a node"""
-        try:
-            # Handle both callback query and text message
-            if hasattr(update, 'callback_query') and update.callback_query:
-                query = update.callback_query
-                await query.answer()
-                user_id = query.from_user.id
-                role = "iran" if "iran" in query.data else "foreign"
-                message = query.message
-            else:
-                # Text message from keyboard
-                text = update.message.text
-                user_id = update.effective_user.id
-                if "ایران" in text or "iran" in text.lower() or self.t(user_id, "add_iran_node") in text:
-                    role = "iran"
-                else:
-                    role = "foreign"
-                message = update.message
-            
-            if not self.is_admin(user_id):
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
-                else:
-                    await message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
-                return ConversationHandler.END
-            
-            self.user_states[user_id] = {"role": role, "step": "name"}
-            
-            cancel_btn = InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")
-            reply_markup = InlineKeyboardMarkup([[cancel_btn]])
-            persistent_keyboard = self._get_keyboard(user_id)
-            if hasattr(message, 'edit_message_text'):
-                await message.edit_message_text(self.t(user_id, "enter_node_name"), reply_markup=reply_markup)
-            else:
-                await message.reply_text(self.t(user_id, "enter_node_name"), reply_markup=reply_markup)
-                # Keep persistent keyboard visible
-                await asyncio.sleep(0.1)
-                await message.reply_text("⬇️", reply_markup=persistent_keyboard)
-            return WAITING_FOR_NODE_NAME
-        except Exception as e:
-            logger.error(f"Error in add_node_start: {e}", exc_info=True)
-            try:
-                user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.from_user.id if hasattr(update, 'from_user') else 0
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(update, 'message') and update.message:
-                    await update.message.reply_text("❌ Error starting node creation", reply_markup=reply_markup)
-            except:
-                pass
-            return ConversationHandler.END
-    
-    async def add_node_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle node name input"""
-        user_id = update.message.from_user.id
-        if user_id not in self.user_states:
-            return ConversationHandler.END
-        
-        self.user_states[user_id]["name"] = update.message.text
-        self.user_states[user_id]["step"] = "ip"
-        
-        cancel_btn = InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")
-        reply_markup = InlineKeyboardMarkup([[cancel_btn]])
-        await update.message.reply_text(self.t(user_id, "enter_node_ip"), reply_markup=reply_markup)
-        return WAITING_FOR_NODE_IP
-    
-    async def add_node_ip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle node IP input"""
-        user_id = update.message.from_user.id
-        if user_id not in self.user_states:
-            return ConversationHandler.END
-        
-        self.user_states[user_id]["ip"] = update.message.text
-        self.user_states[user_id]["step"] = "port"
-        
-        cancel_btn = InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")
-        reply_markup = InlineKeyboardMarkup([[cancel_btn]])
-        await update.message.reply_text(self.t(user_id, "enter_node_port"), reply_markup=reply_markup)
-        return WAITING_FOR_NODE_PORT
-    
-    async def add_node_port(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle node port input and create node"""
-        user_id = update.message.from_user.id
-        if user_id not in self.user_states:
-            return ConversationHandler.END
-        
-        try:
-            port = int(update.message.text) if update.message.text.strip() else 8888
-        except ValueError:
-            reply_markup = self._get_keyboard(user_id)
-            await update.message.reply_text("Invalid port. Using default 8888.", reply_markup=reply_markup)
-            port = 8888
-        
-        state = self.user_states[user_id]
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "http://localhost:8000/api/nodes",
-                    json={
-                        "name": state["name"],
-                        "ip_address": state["ip"],
-                        "api_port": port,
-                        "metadata": {"role": state["role"]}
-                    }
-                )
-                reply_markup = self._get_keyboard(user_id)
-                if response.status_code == 200:
-                    await update.message.reply_text(self.t(user_id, "node_added"), reply_markup=reply_markup)
-                else:
-                    await update.message.reply_text(self.t(user_id, "error", error=response.text), reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Error adding node: {e}", exc_info=True)
-            reply_markup = self._get_keyboard(user_id)
-            await update.message.reply_text(self.t(user_id, "error", error=str(e)), reply_markup=reply_markup)
-        
-        del self.user_states[user_id]
-        return ConversationHandler.END
-    
-    async def remove_node_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start removing a node"""
-        try:
-            # Handle both callback query and text message
-            if hasattr(update, 'callback_query') and update.callback_query:
-                query = update.callback_query
-                await query.answer()
-                user_id = query.from_user.id
-                role = "iran" if "iran" in query.data else "foreign"
-                message = query.message
-            else:
-                # Text message from keyboard
-                text = update.message.text
-                user_id = update.effective_user.id
-                if "ایران" in text or "iran" in text.lower() or self.t(user_id, "add_iran_node") in text:
-                    role = "iran"
-                else:
-                    role = "foreign"
-                message = update.message
-            
-            if not self.is_admin(user_id):
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
-                else:
-                    await message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
-                return ConversationHandler.END
-            
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(select(Node))
-                nodes = result.scalars().all()
-                nodes = [n for n in nodes if n.node_metadata.get("role") == role]
-                
-                if not nodes:
-                    reply_markup = self._get_keyboard(user_id)
-                    if hasattr(message, 'edit_message_text'):
-                        await message.edit_message_text(self.t(user_id, "no_nodes"), reply_markup=reply_markup)
-                    else:
-                        await message.reply_text(self.t(user_id, "no_nodes"), reply_markup=reply_markup)
-                    return ConversationHandler.END
-                
-                keyboard = []
-                for node in nodes:
-                    keyboard.append([InlineKeyboardButton(
-                        f"🗑️ {node.name}",
-                        callback_data=f"rm_node_{node.id}"
-                    )])
-                keyboard.append([InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")])
-                
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(self.t(user_id, "select_node_to_remove"), reply_markup=reply_markup)
-                else:
-                    await message.reply_text(self.t(user_id, "select_node_to_remove"), reply_markup=reply_markup)
-                return WAITING_FOR_NODE_NAME
-        except Exception as e:
-            logger.error(f"Error in remove_node_start: {e}", exc_info=True)
-            try:
-                user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.from_user.id if hasattr(update, 'from_user') else 0
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(update, 'message') and update.message:
-                    await update.message.reply_text("❌ Error processing request", reply_markup=reply_markup)
-            except:
-                pass
-            return ConversationHandler.END
-    
-    async def remove_node_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Confirm and remove node"""
-        query = update.callback_query
-        await query.answer()
-        
-        node_id = query.data.replace("rm_node_", "")
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.delete(f"http://localhost:8000/api/nodes/{node_id}")
-                reply_markup = self._get_keyboard(query.from_user.id)
-                if response.status_code == 200:
-                    await query.edit_message_text(self.t(query.from_user.id, "node_removed"), reply_markup=reply_markup)
-                else:
-                    error_msg = response.text[:200] if response.text else "Unknown error"
-                    await query.edit_message_text(self.t(query.from_user.id, "error", error=error_msg), reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Error removing node: {e}", exc_info=True)
-            reply_markup = self._get_keyboard(query.from_user.id)
-            await query.edit_message_text(self.t(query.from_user.id, "error", error=str(e)[:200]), reply_markup=reply_markup)
-        
-        return ConversationHandler.END
-    
     async def create_tunnel_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start creating a tunnel"""
         try:
@@ -681,7 +479,7 @@ Use buttons in messages to interact with nodes and tunnels."""
             
             cancel_btn = InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")
             reply_markup = InlineKeyboardMarkup([[cancel_btn]])
-            if hasattr(message, 'edit_message_text'):
+            if hasattr(message, 'edit_message_text') and message:
                 await message.edit_message_text(self.t(user_id, "enter_tunnel_name"), reply_markup=reply_markup)
             else:
                 await message.reply_text(self.t(user_id, "enter_tunnel_name"), reply_markup=reply_markup)
@@ -715,6 +513,9 @@ Use buttons in messages to interact with nodes and tunnels."""
         """Handle tunnel core selection"""
         query = update.callback_query
         await query.answer()
+        
+        if not query.message:
+            return ConversationHandler.END
         
         user_id = query.from_user.id
         if user_id not in self.user_states:
@@ -750,6 +551,9 @@ Use buttons in messages to interact with nodes and tunnels."""
         """Handle tunnel type selection"""
         query = update.callback_query
         await query.answer()
+        
+        if not query.message:
+            return ConversationHandler.END
         
         user_id = query.from_user.id
         if user_id not in self.user_states:
@@ -879,6 +683,9 @@ Use buttons in messages to interact with nodes and tunnels."""
         query = update.callback_query
         await query.answer()
         
+        if not query.message:
+            return ConversationHandler.END
+        
         user_id = query.from_user.id
         if user_id not in self.user_states:
             return ConversationHandler.END
@@ -894,8 +701,7 @@ Use buttons in messages to interact with nodes and tunnels."""
             foreign_nodes = [n for n in nodes if n.node_metadata.get("role") == "foreign"]
             
             if not foreign_nodes:
-                reply_markup = self._get_keyboard(user_id)
-                await query.edit_message_text("No foreign nodes found. Please add a foreign node first.", reply_markup=reply_markup)
+                await query.edit_message_text("No foreign nodes found. Please add a foreign node first.")
                 del self.user_states[user_id]
                 return ConversationHandler.END
             
@@ -934,7 +740,7 @@ Use buttons in messages to interact with nodes and tunnels."""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "http://localhost:8000/api/tunnels",
+                    f"{self.api_base_url}/api/tunnels",
                     json={
                         "name": state["name"],
                         "core": state["core"],
@@ -944,16 +750,17 @@ Use buttons in messages to interact with nodes and tunnels."""
                         "spec": spec
                     }
                 )
-                reply_markup = self._get_keyboard(user_id)
+                if not query.message:
+                    return ConversationHandler.END
                 if response.status_code == 200:
-                    await query.edit_message_text(self.t(user_id, "tunnel_created"), reply_markup=reply_markup)
+                    await query.edit_message_text(self.t(user_id, "tunnel_created"))
                 else:
                     error_msg = response.text[:200] if response.text else "Unknown error"
-                    await query.edit_message_text(self.t(user_id, "error", error=error_msg), reply_markup=reply_markup)
+                    await query.edit_message_text(self.t(user_id, "error", error=error_msg))
         except Exception as e:
             logger.error(f"Error creating tunnel: {e}", exc_info=True)
-            reply_markup = self._get_keyboard(user_id)
-            await query.edit_message_text(self.t(user_id, "error", error=str(e)[:200]), reply_markup=reply_markup)
+            if query.message:
+                await query.edit_message_text(self.t(user_id, "error", error=str(e)[:200]))
         
         del self.user_states[user_id]
         return ConversationHandler.END
@@ -975,7 +782,7 @@ Use buttons in messages to interact with nodes and tunnels."""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "http://localhost:8000/api/tunnels",
+                    f"{self.api_base_url}/api/tunnels",
                     json={
                         "name": state["name"],
                         "core": state["core"],
@@ -1013,8 +820,8 @@ Use buttons in messages to interact with nodes and tunnels."""
             
             if not self.is_admin(user_id):
                 reply_markup = self._get_keyboard(user_id)
-                if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
+                if hasattr(message, 'edit_message_text') and message:
+                    await message.edit_message_text(self.t(user_id, "access_denied"))
                 else:
                     await message.reply_text(self.t(user_id, "access_denied"), reply_markup=reply_markup)
                 return ConversationHandler.END
@@ -1025,8 +832,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                 
                 if not tunnels:
                     reply_markup = self._get_keyboard(user_id)
-                    if hasattr(message, 'edit_message_text'):
-                        await message.edit_message_text(self.t(user_id, "no_tunnels"), reply_markup=reply_markup)
+                    if hasattr(message, 'edit_message_text') and message:
+                        await message.edit_message_text(self.t(user_id, "no_tunnels"))
                     else:
                         await message.reply_text(self.t(user_id, "no_tunnels"), reply_markup=reply_markup)
                     return ConversationHandler.END
@@ -1040,7 +847,7 @@ Use buttons in messages to interact with nodes and tunnels."""
                 keyboard.append([InlineKeyboardButton(self.t(user_id, "cancel"), callback_data="cancel")])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                if hasattr(message, 'edit_message_text'):
+                if hasattr(message, 'edit_message_text') and message:
                     await message.edit_message_text(self.t(user_id, "select_tunnel_to_remove"), reply_markup=reply_markup)
                 else:
                     await message.reply_text(self.t(user_id, "select_tunnel_to_remove"), reply_markup=reply_markup)
@@ -1061,21 +868,22 @@ Use buttons in messages to interact with nodes and tunnels."""
         query = update.callback_query
         await query.answer()
         
+        if not query.message:
+            return ConversationHandler.END
+        
         tunnel_id = query.data.replace("rm_tunnel_", "")
         
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.delete(f"http://localhost:8000/api/tunnels/{tunnel_id}")
-                reply_markup = self._get_keyboard(query.from_user.id)
+                response = await client.delete(f"{self.api_base_url}/api/tunnels/{tunnel_id}")
                 if response.status_code == 200:
-                    await query.edit_message_text(self.t(query.from_user.id, "tunnel_removed"), reply_markup=reply_markup)
+                    await query.edit_message_text(self.t(query.from_user.id, "tunnel_removed"))
                 else:
                     error_msg = response.text[:200] if response.text else "Unknown error"
-                    await query.edit_message_text(self.t(query.from_user.id, "error", error=error_msg), reply_markup=reply_markup)
+                    await query.edit_message_text(self.t(query.from_user.id, "error", error=error_msg))
         except Exception as e:
             logger.error(f"Error removing tunnel: {e}", exc_info=True)
-            reply_markup = self._get_keyboard(query.from_user.id)
-            await query.edit_message_text(self.t(query.from_user.id, "error", error=str(e)[:200]), reply_markup=reply_markup)
+            await query.edit_message_text(self.t(query.from_user.id, "error", error=str(e)[:200]))
         
         return ConversationHandler.END
     
@@ -1084,12 +892,14 @@ Use buttons in messages to interact with nodes and tunnels."""
         query = update.callback_query
         await query.answer()
         
+        if not query.message:
+            return ConversationHandler.END
+        
         user_id = query.from_user.id
         if user_id in self.user_states:
             del self.user_states[user_id]
         
-        reply_markup = self._get_keyboard(user_id)
-        await query.edit_message_text(self.t(user_id, "cancel"), reply_markup=reply_markup)
+        await query.edit_message_text(self.t(user_id, "cancel"))
         return ConversationHandler.END
     
     async def cmd_nodes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1164,7 +974,7 @@ Use buttons in messages to interact with nodes and tunnels."""
         
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get("http://localhost:8000/api/logs?limit=20")
+                response = await client.get(f"{self.api_base_url}/api/logs?limit=20")
                 if response.status_code == 200:
                     logs = response.json().get("logs", [])
                     if logs:
@@ -1334,6 +1144,9 @@ Use buttons in messages to interact with nodes and tunnels."""
             query = update.callback_query
             await query.answer()
             
+            if not query.message:
+                return
+            
             if not self.is_admin(query.from_user.id):
                 await query.edit_message_text(self.t(query.from_user.id, "access_denied"))
                 return
@@ -1356,12 +1169,12 @@ Use buttons in messages to interact with nodes and tunnels."""
             self.user_languages[str(query.from_user.id)] = lang
             self._save_languages()
             lang_name = "English" if lang == "en" else "Farsi"
-            reply_markup = self._get_keyboard(query.from_user.id)
-            await query.edit_message_text(self.t(query.from_user.id, "language_set", lang=lang_name), reply_markup=reply_markup)
+            if query.message:
+                await query.edit_message_text(self.t(query.from_user.id, "language_set", lang=lang_name))
         elif data == "back_to_menu":
-            reply_markup = self._get_keyboard(query.from_user.id)
-            text = self.t(query.from_user.id, "welcome")
-            await query.edit_message_text(text, reply_markup=reply_markup)
+            if query.message:
+                text = self.t(query.from_user.id, "welcome")
+                await query.edit_message_text(text)
         elif data == "node_stats":
             await self.cmd_nodes_callback(query)
         elif data == "tunnel_stats":
@@ -1399,8 +1212,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                 
                 if not nodes:
                     text = self.t(user_id, "no_nodes")
-                    if hasattr(message, 'edit_message_text'):
-                        await message.edit_message_text(text, reply_markup=reply_markup)
+                    if hasattr(message, 'edit_message_text') and message:
+                        await message.edit_message_text(text)
                     elif hasattr(message, 'reply_text'):
                         await message.reply_text(text, reply_markup=reply_markup)
                     return
@@ -1416,8 +1229,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                     text += f"{status} {node.name} ({role})\n"
                     text += f"   ID: {node.id[:8]}...\n\n"
                 
-                if hasattr(message, 'edit_message_text'):
-                    await message.edit_message_text(text, reply_markup=reply_markup)
+                if hasattr(message, 'edit_message_text') and message:
+                    await message.edit_message_text(text)
                 elif hasattr(message, 'reply_text'):
                     await message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
@@ -1427,8 +1240,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                 reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
                     await message_or_query.reply_text("❌ Error loading nodes", reply_markup=reply_markup)
-                elif hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text("❌ Error loading nodes", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                    await message_or_query.edit_message_text("❌ Error loading nodes")
                 elif hasattr(message_or_query, 'message'):
                     await message_or_query.message.reply_text("❌ Error loading nodes", reply_markup=reply_markup)
             except:
@@ -1452,8 +1265,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                 
                 if not tunnels:
                     text = self.t(user_id, "no_tunnels")
-                    if hasattr(message_or_query, 'edit_message_text'):
-                        await message_or_query.edit_message_text(text, reply_markup=reply_markup)
+                    if hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                        await message_or_query.edit_message_text(text)
                     elif hasattr(message_or_query, 'reply_text'):
                         await message_or_query.reply_text(text, reply_markup=reply_markup)
                     else:
@@ -1473,12 +1286,13 @@ Use buttons in messages to interact with nodes and tunnels."""
                 if len(tunnels) > 10:
                     text += f"\n... and {len(tunnels) - 10} more"
                 
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text(text, reply_markup=reply_markup)
+                if hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                    await message_or_query.edit_message_text(text)
                 elif hasattr(message_or_query, 'reply_text'):
+                    reply_markup = self._get_keyboard(user_id)
                     await message_or_query.reply_text(text, reply_markup=reply_markup)
                 else:
+                    reply_markup = self._get_keyboard(user_id)
                     await message_or_query.message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error in cmd_tunnels_callback: {e}", exc_info=True)
@@ -1487,8 +1301,8 @@ Use buttons in messages to interact with nodes and tunnels."""
                 reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
                     await message_or_query.reply_text("❌ Error loading tunnels", reply_markup=reply_markup)
-                elif hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text("❌ Error loading tunnels", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                    await message_or_query.edit_message_text("❌ Error loading tunnels")
                 elif hasattr(message_or_query, 'message'):
                     await message_or_query.message.reply_text("❌ Error loading tunnels", reply_markup=reply_markup)
             except:
@@ -1520,22 +1334,23 @@ Use buttons in messages to interact with nodes and tunnels."""
 🔗 Tunnels: {active_tunnels}/{len(tunnels)} active
 """
                 
-                reply_markup = self._get_keyboard(user_id)
-                if hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text(text, reply_markup=reply_markup)
+                if hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                    await message_or_query.edit_message_text(text)
                 elif hasattr(message_or_query, 'reply_text'):
+                    reply_markup = self._get_keyboard(user_id)
                     await message_or_query.reply_text(text, reply_markup=reply_markup)
                 else:
+                    reply_markup = self._get_keyboard(user_id)
                     await message_or_query.message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error in cmd_status_callback: {e}", exc_info=True)
             try:
                 user_id = message_or_query.from_user.id if hasattr(message_or_query, 'from_user') else 0
-                reply_markup = self._get_keyboard(user_id)
                 if hasattr(message_or_query, 'reply_text'):
+                    reply_markup = self._get_keyboard(user_id)
                     await message_or_query.reply_text("❌ Error loading status", reply_markup=reply_markup)
-                elif hasattr(message_or_query, 'edit_message_text'):
-                    await message_or_query.edit_message_text("❌ Error loading status", reply_markup=reply_markup)
+                elif hasattr(message_or_query, 'edit_message_text') and message_or_query:
+                    await message_or_query.edit_message_text("❌ Error loading status")
                 elif hasattr(message_or_query, 'message'):
                     await message_or_query.message.reply_text("❌ Error loading status", reply_markup=reply_markup)
             except:
@@ -1544,12 +1359,15 @@ Use buttons in messages to interact with nodes and tunnels."""
     async def cmd_backup_callback(self, query):
         """Handle backup command from callback"""
         user_id = query.from_user.id
-        reply_markup = self._get_keyboard(user_id)
-        await query.edit_message_text("📦 Creating backup...", reply_markup=reply_markup)
+        if not query.message:
+            return
+        
+        await query.edit_message_text("📦 Creating backup...")
         
         try:
             backup_path = await self.create_backup()
             if backup_path:
+                reply_markup = self._get_keyboard(user_id)
                 with open(backup_path, 'rb') as f:
                     await query.message.reply_document(
                         document=f,
@@ -1558,18 +1376,18 @@ Use buttons in messages to interact with nodes and tunnels."""
                         reply_markup=reply_markup
                     )
                 os.remove(backup_path)
-                await query.edit_message_text("✅ Backup created and sent successfully!", reply_markup=reply_markup)
+                await query.edit_message_text("✅ Backup created and sent successfully!")
             else:
-                await query.edit_message_text("❌ Failed to create backup", reply_markup=reply_markup)
+                await query.edit_message_text("❌ Failed to create backup")
         except Exception as e:
             logger.error(f"Error creating backup: {e}", exc_info=True)
-            await query.edit_message_text(f"❌ Error creating backup: {str(e)}", reply_markup=reply_markup)
+            await query.edit_message_text(f"❌ Error creating backup: {str(e)}")
     
     async def cmd_logs_callback(self, query):
         """Handle logs command from callback"""
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get("http://localhost:8000/api/logs?limit=20")
+                response = await client.get(f"{self.api_base_url}/api/logs?limit=20")
                 if response.status_code == 200:
                     logs = response.json().get("logs", [])
                     if logs:
